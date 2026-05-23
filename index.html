@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Super Anes Mario</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+    body { margin:0; padding:0; background:#5C94FC; font-family:Arial; text-align:center; color:white; touch-action:none; }
+    canvas { border:4px solid #000; image-rendering:pixelated; max-width:100%; height:auto; display:block; margin:0 auto; }
+    h1 { text-shadow:3px 3px #000; margin:10px; }
+    .controls { margin:10px auto; display:flex; justify-content:center; gap:15px; max-width:400px; flex-wrap:wrap; }
+    button { padding:15px 25px; font-size:24px; background:rgba(0,0,0,0.5); color:white; border:3px solid white; border-radius:10px; }
+    .jump-btn { font-size:28px; padding:20px 40px; }
+</style>
+</head>
+<body>
+    <h1>Super Anes Mario</h1>
+    <p>Level <span id="level">1</span> | Score: <span id="score">0</span> | Coins: <span id="coins">0/0</span> | Lives: <span id="lives">❤️❤️❤️</span></p>
+    <canvas id="game" width="800" height="400"></canvas>
+   
+    <div class="controls">
+        <button id="left">←</button>
+        <button id="right">→</button>
+        <button id="jump" class="jump-btn">↑ JUMP</button>
+    </div>
+    <button onclick="restartGame()" style="margin-top:10px;">Restart Game</button>
+
+<script>
+// =============== SUPER ANES MARIO - ANIMATED ENEMIES ===============
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+let score = 0;
+let coinsCollected = 0;
+let totalCoinsInLevel = 0;
+let currentLevel = 1;
+let lives = 3;
+let gameOver = false;
+let gameWon = false;
+let gameStarted = false;
+
+const mario = { x:50, y:300, width:40, height:50, speed:6, velY:0, jumping:false, facing:1, frame:0 };
+
+const gravity = 0.8;
+const jumpPower = -16;
+let keys = {};
+let cloudOffset = 0;
+let birdOffset = 0;
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, duration, type='sine', volume=0.5) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.value = volume; osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + duration);
+}
+function playJumpSound() { playSound(600,0.1,'triangle',0.6); setTimeout(()=>playSound(800,0.1,'triangle',0.5),50); }
+function playStompSound() { playSound(300,0.05,'square',0.7); setTimeout(()=>playSound(200,0.15,'square',0.6),50); }
+function playCoinSound() { playSound(800,0.05,'sine',0.6); setTimeout(()=>playSound(1200,0.1,'sine',0.5),30); }
+function playDieSound() { playSound(400,0.3,'sawtooth',0.6); setTimeout(()=>playSound(200,0.5,'sawtooth',0.5),150); }
+function playWinSound() { 
+    playSound(600,0.1,'sine',0.6); setTimeout(()=>playSound(800,0.1,'sine',0.6),100);
+    setTimeout(()=>playSound(1000,0.1,'sine',0.6),200); setTimeout(()=>playSound(1200,0.4,'sine',0.7),300);
+}
+
+// 30 Levels (No Boss)
+const levels = Array.from({length: 30}, (_, i) => {
+    const lvl = i + 1;
+    const baseSpeed = Math.min(1.5 + lvl * 0.45, 15);
+    const coinPositions = [
+        {x:150, y:220}, {x:280, y:160}, {x:450, y:110}, 
+        {x:620, y:190}, {x:720, y:200 - (lvl%3)*30}
+    ].concat(lvl > 8 ? [{x:380, y:130}, {x:550, y:170}, {x:200, y:180}, {x:480, y:140}] : []);
+   
+    return {
+        platforms: [
+            {x:0, y:350, w:800, h:50},
+            {x:80 + (i%3)*40, y:260 - (lvl>10?20:0), w:120, h:20},
+            {x:250 + (i%5)*30, y:200 - (lvl>15?30:0), w:100, h:20},
+            {x:420 + (i%4)*35, y:150 - (lvl>8?20:0), w:90, h:20},
+            {x:580 + (i%3)*20, y:240 - (lvl>12?40:0), w:130, h:20}
+        ],
+        enemies: Array.from({length: Math.min(2 + Math.floor(lvl/8), 4)}, (_, e) => ({
+            x: 150 + e*180, y: 310, w:40, h:40,
+            speed: baseSpeed + e*0.3, dir: e%2 === 0 ? -1 : 1, alive: true, frame: Math.random()*10
+        })),
+        coins: coinPositions
+    };
+});
+
+let platforms = [];
+let enemies = [];
+let coins = [];
+
+function loadLevel(level) {
+    currentLevel = level;
+    const lvl = levels[level-1];
+    platforms = lvl.platforms;
+    enemies = lvl.enemies.map(e => ({...e}));
+    coins = lvl.coins.map(c => ({...c, collected: false, frame: Math.random()*Math.PI*2}));
+   
+    coinsCollected = 0;
+    totalCoinsInLevel = lvl.coins.length;
+    document.getElementById('coins').textContent = `0/${totalCoinsInLevel}`;
+
+    mario.x = 50; mario.y = 300; mario.velY = 0; mario.jumping = false;
+}
+
+function loseLife() {
+    lives--;
+    document.getElementById('lives').textContent = '❤️'.repeat(lives);
+    playDieSound();
+    if (lives <= 0) gameOver = true;
+    else { mario.x = 50; mario.y = 300; mario.velY = 0; }
+}
+
+// Controls + Start Screen
+window.addEventListener('keydown', e => { keys[e.key] = true; if (!gameStarted) gameStarted = true; });
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+document.getElementById('left').addEventListener('touchstart', () => keys['ArrowLeft'] = true);
+document.getElementById('left').addEventListener('touchend', () => keys['ArrowLeft'] = false);
+document.getElementById('right').addEventListener('touchstart', () => keys['ArrowRight'] = true);
+document.getElementById('right').addEventListener('touchend', () => keys['ArrowRight'] = false);
+document.getElementById('jump').addEventListener('touchstart', () => {
+    if (!mario.jumping) { mario.velY = jumpPower; mario.jumping = true; playJumpSound(); }
+});
+
+canvas.addEventListener('click', () => { if (!gameStarted) gameStarted = true; });
+
+function update() {
+    if (!gameStarted || gameOver || gameWon) return;
+
+    let moving = false;
+    if (keys['ArrowLeft'] || keys['a']) { mario.x -= mario.speed; mario.facing = -1; moving = true; }
+    if (keys['ArrowRight'] || keys['d']) { mario.x += mario.speed; mario.facing = 1; moving = true; }
+
+    if ((keys[' '] || keys['ArrowUp'] || keys['w']) && !mario.jumping) {
+        mario.velY = jumpPower; mario.jumping = true; playJumpSound();
+    }
+
+    mario.velY += gravity;
+    mario.y += mario.velY;
+
+    for (let p of platforms) {
+        if (mario.x < p.x + p.w && mario.x + mario.width > p.x &&
+            mario.y < p.y + p.h && mario.y + mario.height > p.y && mario.velY > 0) {
+            mario.y = p.y - mario.height;
+            mario.velY = 0;
+            mario.jumping = false;
+        }
+    }
+
+    if (moving && !mario.jumping) mario.frame += 0.25;
+
+    if (mario.x < 0) mario.x = 0;
+    if (mario.x + mario.width > canvas.width) {
+        if (currentLevel < 30) {
+            loadLevel(currentLevel + 1);
+            score += 500;
+            playWinSound();
+        } else { gameWon = true; playWinSound(); }
+    }
+
+    if (mario.y > canvas.height) loseLife();
+
+    // Animated Enemies
+    for (let enemy of enemies) {
+        if (!enemy.alive) continue;
+        enemy.x += enemy.speed * enemy.dir;
+        enemy.frame += 0.2;
+        if (enemy.x <= 40 || enemy.x >= 740) enemy.dir *= -1;
+
+        if (mario.x < enemy.x + enemy.w && mario.x + mario.width > enemy.x &&
+            mario.y < enemy.y + enemy.h && mario.y + mario.height > enemy.y) {
+            if (mario.velY > 0 && mario.y < enemy.y - 15) {
+                enemy.alive = false;
+                score += 200;
+                playStompSound();
+                mario.velY = -14;
+            } else loseLife();
+        }
+    }
+
+    // Coins
+    for (let coin of coins) {
+        if (coin.collected) continue;
+        if (mario.x < coin.x + 20 && mario.x + mario.width > coin.x &&
+            mario.y < coin.y + 20 && mario.y + mario.height > coin.y) {
+            coin.collected = true;
+            score += 100;
+            coinsCollected++;
+            document.getElementById('coins').textContent = `${coinsCollected}/${totalCoinsInLevel}`;
+            playCoinSound();
+        }
+        coin.frame += 0.1;
+    }
+
+    score += 0.2;
+    cloudOffset += 0.3;
+    birdOffset += 0.8;
+}
+
+function drawBackground() {
+    const grad = ctx.createLinearGradient(0,0,0,400);
+    grad.addColorStop(0,'#5C94FC'); grad.addColorStop(1,'#A0C4FF');
+    ctx.fillStyle = grad; ctx.fillRect(0,0,800,400);
+
+    ctx.fillStyle = '#2E8B2E';
+    ctx.beginPath();
+    ctx.moveTo(0,350); ctx.quadraticCurveTo(200,220,400,350); ctx.quadraticCurveTo(600,180,800,350);
+    ctx.lineTo(800,400); ctx.lineTo(0,400); ctx.fill();
+
+    function drawTree(x, y, size) {
+        ctx.fillStyle = '#4A2C0B'; ctx.fillRect(x-8, y-30, 16, 40);
+        ctx.fillStyle = '#1E7A1E';
+        ctx.beginPath(); ctx.moveTo(x, y-50); ctx.lineTo(x-size, y-25); ctx.lineTo(x+size, y-25); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(x, y-35); ctx.lineTo(x-size*0.8, y-10); ctx.lineTo(x+size*0.8, y-10); ctx.fill();
+    }
+    drawTree(120, 340, 28); drawTree(280, 355, 22); drawTree(520, 330, 35); drawTree(680, 345, 25); drawTree(750, 355, 18);
+
+    ctx.fillStyle = 'white';
+    const cx = (cloudOffset % 900) - 100;
+    ctx.beginPath(); ctx.ellipse(cx+150,80,45,25,0,0,Math.PI*2); ctx.ellipse(cx+190,70,35,30,0,0,Math.PI*2); ctx.ellipse(cx+230,85,40,22,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx+550,120,50,28,0,0,Math.PI*2); ctx.ellipse(cx+590,105,38,32,0,0,Math.PI*2); ctx.ellipse(cx+640,125,45,25,0,0,Math.PI*2); ctx.fill();
+
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+        const by = 60 + i*25;
+        const bx = (birdOffset + i*180) % 1100 - 150;
+        ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx+12, by-6); ctx.lineTo(bx+24, by); ctx.stroke();
+    }
+}
+
+function drawMario() {
+    ctx.save();
+    ctx.translate(mario.x + 20, mario.y + 25);
+    if (mario.facing === -1) ctx.scale(-1, 1);
+    ctx.fillStyle = '#E4000F'; ctx.fillRect(-18,-22,36,35);
+    ctx.fillStyle = '#FFCC88'; ctx.fillRect(-14,-32,28,18);
+    ctx.fillStyle = '#E4000F'; ctx.fillRect(-16,-38,32,10);
+    ctx.fillStyle = '#000'; ctx.fillRect(4,-27,7,7);
+    const leg = Math.sin(mario.frame*10)*6;
+    ctx.fillStyle = '#000080';
+    ctx.fillRect(-12,8,10,18+leg);
+    ctx.fillRect(2,8,10,18-leg);
+    ctx.restore();
+}
+
+function drawAnimatedEnemy(enemy) {
+    const bob = Math.sin(enemy.frame * 3) * 3;
+    ctx.fillStyle = '#8B4513';
+    ctx.fillRect(enemy.x, enemy.y + bob, enemy.w, enemy.h);
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(enemy.x + 8, enemy.y + 12 + bob, 8, 8);
+    ctx.fillRect(enemy.x + 24, enemy.y + 12 + bob, 8, 8);
+
+    const legSwing = Math.sin(enemy.frame * 6) * 5;
+    ctx.fillStyle = '#654321';
+    ctx.fillRect(enemy.x + 8, enemy.y + 32 + bob, 8, 12 + legSwing);
+    ctx.fillRect(enemy.x + 24, enemy.y + 32 + bob, 8, 12 - legSwing);
+}
+
+function draw() {
+    if (!gameStarted) {
+        ctx.fillStyle = '#5C94FC'; ctx.fillRect(0,0,800,400);
+        ctx.fillStyle = 'white'; ctx.font = 'bold 58px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('SUPER ANES MARIO', 400, 130);
+        ctx.font = '28px Arial'; ctx.fillStyle = '#FF0'; ctx.fillText('by Anes', 400, 175);
+        ctx.font = 'bold 32px Arial'; ctx.fillStyle = 'white';
+        ctx.fillText('TAP SCREEN OR PRESS ANY KEY', 400, 260);
+        ctx.fillText('TO START', 400, 300);
+        return;
+    }
+
+    drawBackground();
+    ctx.fillStyle = '#0B5E0B';
+    for (let p of platforms) ctx.fillRect(p.x, p.y, p.w, p.h);
+
+    drawMario();
+
+    for (let enemy of enemies) {
+        if (enemy.alive) drawAnimatedEnemy(enemy);
+    }
+
+    for (let coin of coins) {
+        if (coin.collected) continue;
+        const bob = Math.sin(coin.frame) * 4;
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath(); ctx.arc(coin.x + 10, coin.y + 10 + bob, 10, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#FFA500'; ctx.font = '12px Arial';
+        ctx.fillText('C', coin.x + 6, coin.y + 14 + bob);
+    }
+
+    document.getElementById('level').textContent = currentLevel;
+    document.getElementById('score').textContent = Math.floor(score);
+
+    if (gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,800,400);
+        ctx.fillStyle = 'red'; ctx.font = '50px Arial'; ctx.fillText('GAME OVER', 220, 180);
+    }
+    if (gameWon) {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,800,400);
+        ctx.fillStyle = 'gold'; ctx.font = '50px Arial'; ctx.fillText('YOU WIN!', 250, 180);
+    }
+}
+
+function gameLoop() { update(); draw(); requestAnimationFrame(gameLoop); }
+
+function restartGame() {
+    location.reload();
+}
+
+loadLevel(1);
+document.getElementById('lives').textContent = '❤️❤️❤️';
+gameLoop();
+</script>
+</body>
+</html>
