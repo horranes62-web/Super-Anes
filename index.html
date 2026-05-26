@@ -2,31 +2,36 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Super Anes Mario - Gun Enemy Edition</title>
+<title>Super Anes</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-    body { margin:0; padding:0; background:#5C94FC; font-family:Arial; text-align:center; color:white; touch-action:none; }
-    canvas { border:4px solid #000; image-rendering:pixelated; max-width:100%; height:auto; display:block; margin:0 auto; }
+    body { margin:0; padding:0; background:#111; font-family:Arial; text-align:center; color:white; touch-action:none; }
+    canvas { border:4px solid #000; image-rendering:pixelated; max-width:100%; height:auto; display:block; margin:0 auto; background: #5C94FC; }
     h1 { text-shadow:3px 3px #000; margin:10px; }
-    .controls { margin:10px auto; display:flex; justify-content:center; gap:15px; max-width:400px; flex-wrap:wrap; }
-    button { padding:15px 25px; font-size:24px; background:rgba(0,0,0,0.5); color:white; border:3px solid white; border-radius:10px; }
-    .jump-btn { font-size:28px; padding:20px 40px; }
+    .controls { margin:10px auto; display:flex; justify-content:center; gap:10px; max-width:500px; flex-wrap:wrap; }
+    button { padding:15px 20px; font-size:20px; background:rgba(0,0,0,0.6); color:white; border:3px solid white; border-radius:10px; cursor: pointer; }
+    button:active { background: rgba(255,255,255,0.3); }
+    .action-btn { font-size:24px; padding:15px 25px; font-weight: bold; }
+    .shoot-btn { border-color: #FF4500; color: #FFD700; }
+    .pause-btn { border-color: #00FFCC; color: #00FFCC; }
 </style>
 </head>
 <body>
-    <h1>Super Anes Mario</h1>
+    <h1>Super Anes</h1>
     <p>Level <span id="level">1</span> | Score: <span id="score">0</span> | Coins: <span id="coins">0/0</span> | Lives: <span id="lives">❤️❤️❤️</span></p>
     <canvas id="game" width="800" height="400"></canvas>
     
     <div class="controls">
         <button id="left">←</button>
         <button id="right">→</button>
-        <button id="jump" class="jump-btn">↑ JUMP</button>
+        <button id="shoot" class="action-btn shoot-btn">🔥 SHOOT</button>
+        <button id="jump" class="action-btn">↑ JUMP</button>
+        <button id="pause" class="action-btn pause-btn">⏸ PAUSE</button>
     </div>
-    <button onclick="restartGame()" style="margin-top:10px;">Restart Game</button>
+    <button onclick="restartGame()" style="margin-top:10px; font-size: 16px; padding: 10px 20px;">Restart Game</button>
 
 <script>
-// =============== SUPER ANES MARIO - GUN ENEMY EDITION ===============
+// =============== SUPER ANES MARIO - UPGRADED EDITION ===============
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
@@ -38,6 +43,7 @@ let lives = 3;
 let gameOver = false;
 let gameWon = false;
 let gameStarted = false;
+let isPaused = false; // Pause state tracker
 
 const mario = { x:50, y:300, width:40, height:50, speed:6, velY:0, jumping:false, facing:1, frame:0 };
 
@@ -48,11 +54,16 @@ let cloudOffset = 0;
 let birdOffset = 0;
 let lavaCycle = 0;
 
-// Track enemy bullets
+// Track projectiles and particles
 let bullets = [];
+let fireballs = [];
+let particles = [];
+let shootCooldown = 0;
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 function playSound(freq, duration, type='sine', volume=0.5) {
+    if (isPaused) return; // Prevent playing sound effects while paused
+    if (audioCtx.state === 'suspended') audioCtx.resume();
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
@@ -63,10 +74,24 @@ function playJumpSound() { playSound(600,0.1,'triangle',0.6); setTimeout(()=>pla
 function playStompSound() { playSound(300,0.05,'square',0.7); setTimeout(()=>playSound(200,0.15,'square',0.6),50); }
 function playCoinSound() { playSound(800,0.05,'sine',0.6); setTimeout(()=>playSound(1200,0.1,'sine',0.5),30); }
 function playDieSound() { playSound(400,0.3,'sawtooth',0.6); setTimeout(()=>playSound(200,0.5,'sawtooth',0.5),150); }
-function playLaserSound() { playSound(500,0.08,'sawtooth',0.3); } // New gun sound
+function playLaserSound() { playSound(500,0.08,'sawtooth',0.3); } 
+function playFireballSound() { playSound(300,0.1,'square',0.5); setTimeout(()=>playSound(150,0.1,'square',0.5), 50); }
 function playWinSound() { 
     playSound(600,0.1,'sine',0.6); setTimeout(()=>playSound(800,0.1,'sine',0.6),100);
     setTimeout(()=>playSound(1000,0.1,'sine',0.6),200); setTimeout(()=>playSound(1200,0.4,'sine',0.7),300);
+}
+
+// Particle System
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x: x, y: y,
+            vx: (Math.random() - 0.5) * 10,
+            vy: (Math.random() - 0.5) * 10,
+            life: 1.0,
+            color: color
+        });
+    }
 }
 
 // 30 Levels Generation
@@ -86,6 +111,13 @@ const levels = Array.from({length: 30}, (_, i) => {
         }
     }
 
+    // No enemies on level 1
+    const enemyList = lvl === 1 ? [] : Array.from({length: Math.min(2 + Math.floor(lvl/8), 4)}, (_, e) => ({
+        x: 150 + e*180, y: 310, w:40, h:40,
+        speed: baseSpeed + e*0.3, dir: e%2 === 0 ? -1 : 1, alive: true, frame: Math.random()*10,
+        shootTimer: Math.random() * 100 
+    }));
+
     return {
         platforms: [
             {x:0, y:350, w:800, h:50},
@@ -94,11 +126,7 @@ const levels = Array.from({length: 30}, (_, i) => {
             {x:420 + (i%4)*35, y:150 - (lvl>8?20:0), w:90, h:20},
             {x:580 + (i%3)*20, y:240 - (lvl>12?40:0), w:130, h:20}
         ],
-        enemies: Array.from({length: Math.min(2 + Math.floor(lvl/8), 4)}, (_, e) => ({
-            x: 150 + e*180, y: 310, w:40, h:40,
-            speed: baseSpeed + e*0.3, dir: e%2 === 0 ? -1 : 1, alive: true, frame: Math.random()*10,
-            shootTimer: Math.random() * 100 // Stagger enemy shooting times
-        })),
+        enemies: enemyList,
         coins: coinPositions,
         spikes: spikes
     };
@@ -116,7 +144,12 @@ function loadLevel(level) {
     enemies = lvl.enemies.map(e => ({...e}));
     coins = lvl.coins.map(c => ({...c, collected: false, frame: Math.random()*Math.PI*2}));
     spikes = lvl.spikes || [];
-    bullets = []; // Clear old bullets on level load
+    
+    // Reset entities
+    bullets = []; 
+    fireballs = [];
+    particles = [];
+    shootCooldown = 0;
     
     coinsCollected = 0;
     totalCoinsInLevel = lvl.coins.length;
@@ -129,24 +162,71 @@ function loseLife() {
     lives--;
     document.getElementById('lives').textContent = '❤️'.repeat(lives);
     playDieSound();
-    bullets = []; // Clear screen projectiles on death
+    bullets = []; 
+    fireballs = [];
+    spawnParticles(mario.x + 20, mario.y + 25, '#E4000F', 30); // Mario death particles
+    
     if (lives <= 0) gameOver = true;
     else { mario.x = 50; mario.y = 300; mario.velY = 0; }
 }
 
+function togglePause() {
+    if (!gameStarted || gameOver || gameWon) return;
+    isPaused = !isPaused;
+    const pauseBtn = document.getElementById('pause');
+    if (isPaused) {
+        pauseBtn.textContent = "▶ RESUME";
+        pauseBtn.style.borderColor = "#FFD700";
+        pauseBtn.style.color = "#FFD700";
+    } else {
+        pauseBtn.textContent = "⏸ PAUSE";
+        pauseBtn.style.borderColor = "#00FFCC";
+        pauseBtn.style.color = "#00FFCC";
+    }
+}
+
 // Controls + Start Screen
 window.addEventListener('keydown', e => { 
+    if ((e.key === 'p' || e.key === 'P') && gameStarted) {
+        togglePause();
+        return;
+    }
+    if (isPaused) return; // Ignore movement keys if paused
+
     keys[e.key] = true; 
     if (!gameStarted) { gameStarted = true; if (audioCtx.state === 'suspended') audioCtx.resume(); }
 });
 window.addEventListener('keyup', e => keys[e.key] = false);
 
-document.getElementById('left').addEventListener('touchstart', () => keys['ArrowLeft'] = true);
-document.getElementById('left').addEventListener('touchend', () => keys['ArrowLeft'] = false);
-document.getElementById('right').addEventListener('touchstart', () => keys['ArrowRight'] = true);
-document.getElementById('right').addEventListener('touchend', () => keys['ArrowRight'] = false);
-document.getElementById('jump').addEventListener('touchstart', () => {
+// Mobile Touch Controls
+const addTouch = (id, key) => {
+    const el = document.getElementById(id);
+    el.addEventListener('touchstart', (e) => { 
+        e.preventDefault(); 
+        if (isPaused) return;
+        keys[key] = true; 
+    });
+    el.addEventListener('touchend', (e) => { 
+        e.preventDefault(); 
+        keys[key] = false; 
+    });
+};
+addTouch('left', 'ArrowLeft');
+addTouch('right', 'ArrowRight');
+addTouch('shoot', 'f'); // Bind mobile shoot to 'f' key logic
+
+document.getElementById('jump').addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (isPaused) return;
     if (!mario.jumping) { mario.velY = jumpPower; mario.jumping = true; playJumpSound(); }
+});
+
+document.getElementById('pause').addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    togglePause();
+});
+document.getElementById('pause').addEventListener('click', () => {
+    togglePause();
 });
 
 canvas.addEventListener('click', () => { 
@@ -154,7 +234,7 @@ canvas.addEventListener('click', () => {
 });
 
 function update() {
-    if (!gameStarted || gameOver || gameWon) return;
+    if (!gameStarted || gameOver || gameWon || isPaused) return;
 
     let moving = false;
     if (keys['ArrowLeft'] || keys['a']) { mario.x -= mario.speed; mario.facing = -1; moving = true; }
@@ -162,6 +242,19 @@ function update() {
 
     if ((keys[' '] || keys['ArrowUp'] || keys['w']) && !mario.jumping) {
         mario.velY = jumpPower; mario.jumping = true; playJumpSound();
+    }
+
+    // Mario Shooting Logic
+    if (shootCooldown > 0) shootCooldown--;
+    if ((keys['f'] || keys['F']) && shootCooldown === 0) {
+        fireballs.push({
+            x: mario.facing === 1 ? mario.x + mario.width : mario.x - 15,
+            y: mario.y + 15,
+            speed: 10 * mario.facing,
+            w: 12, h: 12
+        });
+        shootCooldown = 25; // Prevent spamming
+        playFireballSound();
     }
 
     mario.velY += gravity;
@@ -188,8 +281,8 @@ function update() {
     if (mario.x < 0) mario.x = 0;
     if (mario.x + mario.width > canvas.width) {
         if (currentLevel < 30) {
-            loadLevel(currentLevel + 1);
             score += 500;
+            loadLevel(currentLevel + 1);
             playWinSound();
         } else { gameWon = true; playWinSound(); }
     }
@@ -212,6 +305,39 @@ function update() {
         }
     }
 
+    // Update Mario's Fireballs
+    for (let i = fireballs.length - 1; i >= 0; i--) {
+        let fb = fireballs[i];
+        fb.x += fb.speed;
+        
+        // Add trail particles
+        if(Math.random() > 0.5) spawnParticles(fb.x + 6, fb.y + 6, '#FFA500', 1);
+
+        let fbRemoved = false;
+
+        // Check collision with enemies
+        for (let enemy of enemies) {
+            if (enemy.alive && fb.x < enemy.x + enemy.w && fb.x + fb.w > enemy.x &&
+                fb.y < enemy.y + enemy.h && fb.y + fb.h > enemy.y) {
+                
+                enemy.alive = false;
+                score += 300; // Bonus for shooting
+                playStompSound();
+                spawnParticles(enemy.x + 20, enemy.y + 20, '#8B4513', 20); // Enemy death particles
+                fireballs.splice(i, 1);
+                fbRemoved = true;
+                break;
+            }
+        }
+
+        if (fbRemoved) continue;
+
+        // Delete if offscreen
+        if (fb.x < 0 || fb.x > canvas.width) {
+            fireballs.splice(i, 1);
+        }
+    }
+
     // Animated Enemies + Shooting Mechanic
     for (let enemy of enemies) {
         if (!enemy.alive) continue;
@@ -224,25 +350,24 @@ function update() {
         if (enemy.shootTimer > 130) {
             enemy.shootTimer = 0;
             const bob = Math.sin(enemy.frame * 3) * 3;
-            // Spawn bullet from gun tip position
             bullets.push({
                 x: enemy.dir === 1 ? enemy.x + enemy.w + 10 : enemy.x - 15,
                 y: enemy.y + 16 + bob,
                 speed: 5 * enemy.dir,
-                w: 12,
-                h: 6
+                w: 12, h: 6
             });
             playLaserSound();
         }
 
-        // Touch Enemy Collision
+        // Touch Enemy Collision (Stomping vs Dying)
         if (mario.x < enemy.x + enemy.w && mario.x + mario.width > enemy.x &&
             mario.y < enemy.y + enemy.h && mario.y + mario.height > enemy.y) {
             if (mario.velY > 0 && mario.y < enemy.y - 15) {
                 enemy.alive = false;
                 score += 200;
                 playStompSound();
-                mario.velY = -14;
+                spawnParticles(enemy.x + 20, enemy.y + 20, '#8B4513', 20);
+                mario.velY = -14; // Bounce off enemy
             } else loseLife();
         }
     }
@@ -252,7 +377,6 @@ function update() {
         let b = bullets[i];
         b.x += b.speed;
 
-        // Check if bullet hits Mario
         if (b.x < mario.x + mario.width && b.x + b.w > mario.x &&
             b.y < mario.y + mario.height && b.y + b.h > mario.y) {
             bullets.splice(i, 1);
@@ -260,7 +384,6 @@ function update() {
             continue;
         }
 
-        // Delete bullets that go off-screen
         if (b.x < 0 || b.x > canvas.width) {
             bullets.splice(i, 1);
         }
@@ -276,39 +399,73 @@ function update() {
             coinsCollected++;
             document.getElementById('coins').textContent = `${coinsCollected}/${totalCoinsInLevel}`;
             playCoinSound();
+            spawnParticles(coin.x + 10, coin.y + 10, '#FFD700', 15); // Coin burst
         }
         coin.frame += 0.1;
     }
 
-    score += 0.2;
+    // Particles update
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.03; // Fade out speed
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+
     cloudOffset += 0.3;
     birdOffset += 0.8;
 }
 
 function drawBackground() {
+    // Dynamic Sky Color based on level
+    let topColor, bottomColor;
+    if (currentLevel <= 10) {
+        topColor = '#5C94FC'; bottomColor = '#A0C4FF'; // Day
+    } else if (currentLevel <= 20) {
+        topColor = '#FF7E5F'; bottomColor = '#FEB47B'; // Sunset
+    } else {
+        topColor = '#0B0C10'; bottomColor = '#1F2833'; // Night
+    }
+
     const grad = ctx.createLinearGradient(0,0,0,400);
-    grad.addColorStop(0,'#5C94FC'); grad.addColorStop(1,'#A0C4FF');
+    grad.addColorStop(0, topColor); grad.addColorStop(1, bottomColor);
     ctx.fillStyle = grad; ctx.fillRect(0,0,800,400);
 
-    ctx.fillStyle = '#2E8B2E';
+    // Draw stars if night
+    if (currentLevel > 20) {
+        ctx.fillStyle = 'white';
+        for(let i=0; i<30; i++) {
+            const sx = (i * 123 + cloudOffset*0.1) % 800;
+            const sy = (i * 87) % 200;
+            ctx.globalAlpha = Math.abs(Math.sin(lavaCycle + i));
+            ctx.fillRect(sx, sy, 2, 2);
+        }
+        ctx.globalAlpha = 1.0;
+    }
+
+    // Hills
+    ctx.fillStyle = currentLevel > 20 ? '#1A4D1A' : '#2E8B2E';
     ctx.beginPath();
     ctx.moveTo(0,350); ctx.quadraticCurveTo(200,220,400,350); ctx.quadraticCurveTo(600,180,800,350);
     ctx.lineTo(800,400); ctx.lineTo(0,400); ctx.fill();
 
     function drawTree(x, y, size) {
-        ctx.fillStyle = '#4A2C0B'; ctx.fillRect(x-8, y-30, 16, 40);
-        ctx.fillStyle = '#1E7A1E';
+        ctx.fillStyle = currentLevel > 20 ? '#2A1C0B' : '#4A2C0B'; ctx.fillRect(x-8, y-30, 16, 40);
+        ctx.fillStyle = currentLevel > 20 ? '#0E4A0E' : '#1E7A1E';
         ctx.beginPath(); ctx.moveTo(x, y-50); ctx.lineTo(x-size, y-25); ctx.lineTo(x+size, y-25); ctx.fill();
         ctx.beginPath(); ctx.moveTo(x, y-35); ctx.lineTo(x-size*0.8, y-10); ctx.lineTo(x+size*0.8, y-10); ctx.fill();
     }
     drawTree(120, 340, 28); drawTree(280, 355, 22); drawTree(520, 330, 35); drawTree(680, 345, 25); drawTree(750, 355, 18);
 
-    ctx.fillStyle = 'white';
+    // Clouds (grayish at night)
+    ctx.fillStyle = currentLevel > 20 ? '#555' : 'white';
     const cx = (cloudOffset % 900) - 100;
     ctx.beginPath(); ctx.ellipse(cx+150,80,45,25,0,0,Math.PI*2); ctx.ellipse(cx+190,70,35,30,0,0,Math.PI*2); ctx.ellipse(cx+230,85,40,22,0,0,Math.PI*2); ctx.fill();
     ctx.beginPath(); ctx.ellipse(cx+550,120,50,28,0,0,Math.PI*2); ctx.ellipse(cx+590,105,38,32,0,0,Math.PI*2); ctx.ellipse(cx+640,125,45,25,0,0,Math.PI*2); ctx.fill();
 
-    ctx.strokeStyle = '#333'; ctx.lineWidth = 2;
+    // Birds
+    ctx.strokeStyle = currentLevel > 20 ? '#111' : '#333'; ctx.lineWidth = 2;
     for (let i = 0; i < 4; i++) {
         const by = 60 + i*25;
         const bx = (birdOffset + i*180) % 1100 - 150;
@@ -342,6 +499,11 @@ function drawAnimatedEnemy(enemy) {
     ctx.fillStyle = '#000';
     ctx.fillRect(enemy.x + 8, enemy.y + 12 + bob, 8, 8);
     ctx.fillRect(enemy.x + 24, enemy.y + 12 + bob, 8, 8);
+    
+    // Angry eyebrows
+    ctx.strokeStyle = 'red'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(enemy.x + 4, enemy.y + 10 + bob); ctx.lineTo(enemy.x + 16, enemy.y + 14 + bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(enemy.x + 36, enemy.y + 10 + bob); ctx.lineTo(enemy.x + 24, enemy.y + 14 + bob); ctx.stroke();
 
     // Legs
     const legSwing = Math.sin(enemy.frame * 6) * 5;
@@ -349,27 +511,48 @@ function drawAnimatedEnemy(enemy) {
     ctx.fillRect(enemy.x + 8, enemy.y + 32 + bob, 8, 12 + legSwing);
     ctx.fillRect(enemy.x + 24, enemy.y + 32 + bob, 8, 12 - legSwing);
 
-    // Draw Gun based on direction
+    // Draw Gun
     ctx.fillStyle = '#222';
     if (enemy.dir === 1) {
-        ctx.fillRect(enemy.x + enemy.w - 5, enemy.y + 14 + bob, 15, 8); // Gun barrel right
-        ctx.fillRect(enemy.x + enemy.w - 5, enemy.y + 20 + bob, 4, 6);   // Gun handle
+        ctx.fillRect(enemy.x + enemy.w - 5, enemy.y + 14 + bob, 15, 8); 
+        ctx.fillRect(enemy.x + enemy.w - 5, enemy.y + 20 + bob, 4, 6);  
     } else {
-        ctx.fillRect(enemy.x - 10, enemy.y + 14 + bob, 15, 8);         // Gun barrel left
-        ctx.fillRect(enemy.x + 1, enemy.y + 20 + bob, 4, 6);           // Gun handle
+        ctx.fillRect(enemy.x - 10, enemy.y + 14 + bob, 15, 8);         
+        ctx.fillRect(enemy.x + 1, enemy.y + 20 + bob, 4, 6);           
     }
 }
 
-function drawBullets() {
+function drawProjectiles() {
+    // Enemy Bullets
     ctx.fillStyle = '#FF3333';
     for (let b of bullets) {
         ctx.fillRect(b.x, b.y, b.w, b.h);
-        
-        // Add a small energy glow effect around bullet
         ctx.fillStyle = 'rgba(255, 255, 0, 0.4)';
         ctx.fillRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
-        ctx.fillStyle = '#FF3333'; // Reset
+        ctx.fillStyle = '#FF3333';
     }
+
+    // Mario's Fireballs
+    ctx.fillStyle = '#FF4500';
+    for (let fb of fireballs) {
+        ctx.beginPath();
+        ctx.arc(fb.x + fb.w/2, fb.y + fb.h/2, fb.w/2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.6)';
+        ctx.beginPath();
+        ctx.arc(fb.x + fb.w/2, fb.y + fb.h/2, fb.w/2 + 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#FF4500';
+    }
+}
+
+function drawParticles() {
+    for (let p of particles) {
+        ctx.globalAlpha = Math.max(0, p.life);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, 6, 6);
+    }
+    ctx.globalAlpha = 1.0;
 }
 
 function drawLava() {
@@ -399,6 +582,15 @@ function drawSpikes() {
         ctx.lineTo(spike.x + spike.w / 2, spike.y);
         ctx.lineTo(spike.x + spike.w, spike.y + spike.h);
         ctx.fill();
+        
+        // Add metallic reflection
+        ctx.fillStyle = '#E0E0E0';
+        ctx.beginPath();
+        ctx.moveTo(spike.x + spike.w/4, spike.y + spike.h);
+        ctx.lineTo(spike.x + spike.w/2, spike.y + spike.h/2);
+        ctx.lineTo(spike.x + spike.w/2, spike.y + spike.h);
+        ctx.fill();
+        ctx.fillStyle = '#A9A9A9';
     }
 }
 
@@ -415,8 +607,16 @@ function draw() {
     }
 
     drawBackground();
-    ctx.fillStyle = '#0B5E0B';
-    for (let p of platforms) ctx.fillRect(p.x, p.y, p.w, p.h);
+    
+    // Platforms based on level time
+    ctx.fillStyle = currentLevel > 20 ? '#222' : '#0B5E0B';
+    for (let p of platforms) {
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        // Add grass top
+        ctx.fillStyle = currentLevel > 20 ? '#444' : '#15B015';
+        ctx.fillRect(p.x, p.y, p.w, 5);
+        ctx.fillStyle = currentLevel > 20 ? '#222' : '#0B5E0B';
+    }
 
     drawSpikes();
     drawMario();
@@ -425,7 +625,8 @@ function draw() {
         if (enemy.alive) drawAnimatedEnemy(enemy);
     }
 
-    drawBullets(); // Renders enemy projectiles
+    drawProjectiles();
+    drawParticles();
 
     for (let coin of coins) {
         if (coin.collected) continue;
@@ -444,11 +645,25 @@ function draw() {
     ctx.textAlign = 'center';
     if (gameOver) {
         ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,800,400);
-        ctx.fillStyle = 'red'; ctx.font = '50px Arial'; ctx.fillText('GAME OVER', 400, 180);
+        ctx.fillStyle = 'red'; ctx.font = 'bold 50px Arial'; ctx.fillText('GAME OVER', 400, 180);
+        ctx.font = '24px Arial'; ctx.fillStyle = 'white'; ctx.fillText(`Final Score: ${Math.floor(score)}`, 400, 230);
     }
     if (gameWon) {
         ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,800,400);
-        ctx.fillStyle = 'gold'; ctx.font = '50px Arial'; ctx.fillText('YOU WIN!', 400, 180);
+        ctx.fillStyle = 'gold'; ctx.font = 'bold 50px Arial'; ctx.fillText('YOU WIN!', 400, 180);
+        ctx.font = '24px Arial'; ctx.fillStyle = 'white'; ctx.fillText(`Final Score: ${Math.floor(score)}`, 400, 230);
+    }
+    
+    // Draw Pause Screen Overlay
+    if (isPaused) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; 
+        ctx.fillRect(0, 0, 800, 400);
+        ctx.fillStyle = '#00FFCC'; 
+        ctx.font = 'bold 48px Arial'; 
+        ctx.fillText('GAME PAUSED', 400, 200);
+        ctx.font = '20px Arial'; 
+        ctx.fillStyle = 'white'; 
+        ctx.fillText('Press P or tap Resume to continue', 400, 240);
     }
 }
 
