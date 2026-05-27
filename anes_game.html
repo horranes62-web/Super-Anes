@@ -18,7 +18,6 @@
     .pause-btn { border-color:#00FFCC; color:#00FFCC; }
     .shop-btn { border-color:#FFD700; color:#FFD700; }
     .restart-btn { font-size:14px; padding:8px 16px; }
-    /* Mobile overlay controls */
     .mobile-ctrl { display:none; }
     @media (max-width:820px) {
         canvas { width:100%; height:auto; max-width:100%; }
@@ -62,6 +61,9 @@
     </div>
     <div style="margin-top:6px; display:flex; justify-content:center; gap:10px; flex-wrap:wrap;">
         <button onclick="restartGame()" class="restart-btn">Restart Game</button>
+    </div>
+    <div style="margin-top:6px; display:flex; justify-content:center; gap:10px; flex-wrap:wrap;">
+        <button onclick="restartGame()" style="font-size:14px; padding:8px 16px;">Restart Game</button>
     </div>
 
 <script>
@@ -129,7 +131,6 @@ const gravity = 0.8;
 let keys = {};
 let cloudOffset = 0;
 let birdOffset = 0;
-let starTwinkle = 0;
 
 let bullets = [];
 let fireballs = [];
@@ -188,33 +189,33 @@ function pickEnemyTypes(level, maxCount) {
 
 const levels = Array.from({length: 30}, (_, i) => {
     const lvl = i + 1;
-    const baseSpeed = Math.min(1.5 + lvl * 0.5, 12);
+    const baseSpeed = Math.min(2.5 + lvl * 0.7, 20);
     const coinPositions = [
         {x:150, y:220}, {x:280, y:160}, {x:450, y:110}, 
         {x:620, y:190}, {x:720, y:200 - (lvl%3)*30}
-    ].concat(lvl > 8 ? [{x:380, y:130}, {x:550, y:170}, {x:200, y:180}, {x:480, y:140}] : []);
+    ].concat(lvl > 5 ? [{x:380, y:130}, {x:550, y:170}, {x:200, y:180}, {x:480, y:140}] : []);
     
     const spikes = [];
     if (lvl >= 2) {
         spikes.push({x: 240 + (i%4)*40, y: 305 - (lvl>15?30:0), w: 20, h: 20});
-        if (lvl >= 5) spikes.push({x: 400 + (i%3)*50, y: 255 - (lvl>8?20:0), w: 20, h: 20});
-        if (lvl >= 8) spikes.push({x: 550 + (i%2)*60, y: 200 - (lvl>12?20:0), w: 20, h: 20});
-        if (lvl >= 12) spikes.push({x: 150 + (i%3)*45, y: 180, w: 20, h: 20});
-        if (lvl >= 15) spikes.push({x: 350 + (i%5)*30, y: 150, w: 20, h: 20});
+        if (lvl >= 4) spikes.push({x: 400 + (i%3)*50, y: 255 - (lvl>8?20:0), w: 20, h: 20});
+        if (lvl >= 6) spikes.push({x: 550 + (i%2)*60, y: 200 - (lvl>12?20:0), w: 20, h: 20});
+        if (lvl >= 9) spikes.push({x: 150 + (i%3)*45, y: 180, w: 20, h: 20});
+        if (lvl >= 12) spikes.push({x: 350 + (i%5)*30, y: 150, w: 20, h: 20});
     }
 
-    const enemyCount = lvl === 1 ? 0 : Math.min(2 + Math.floor(lvl/4), 6);
+    const enemyCount = lvl === 1 ? 1 : Math.min(3 + Math.floor(lvl/3), 8);
     const enemyTypes = pickEnemyTypes(lvl, enemyCount);
     const enemyList = Array.from({length: enemyCount}, (_, e) => {
         const type = enemyTypes[e] || 'shooter';
         const base = {
-            x: 300 + e*140, y: 310, w:40, h:40,
-            speed: baseSpeed + e*0.3, dir: -1, alive: true, frame: Math.random()*10,
-            shootTimer: 80 + Math.random() * 80, type: type,
-            spawnTimer: 120 + e*45
+            x: 150 + e*90 + Math.random()*40, y: 310, w:40, h:40,
+            speed: baseSpeed + e*0.5, dir: e%2 === 0 ? -1 : 1, alive: true, frame: Math.random()*10,
+            shootTimer: Math.random() * 60, type: type,
+            spawnTimer: 15 + e*10
         };
-        if (type === 'flyer') { base.y = 150 + (e*30)%100; base.startY = base.y; base.flySpeed = 1 + Math.random()*1.5; }
-        if (type === 'charger') { base.charging = false; base.chargeCooldown = 30 + Math.random()*30; base.baseSpeed = base.speed; base.chargeSpeed = base.speed*2.5; }
+        if (type === 'flyer') { base.y = 120 + (e*30)%120; base.startY = base.y; base.flySpeed = 1.5 + Math.random()*2; }
+        if (type === 'charger') { base.charging = false; base.chargeCooldown = 0; base.baseSpeed = base.speed; base.chargeSpeed = base.speed*4; }
         return base;
     });
 
@@ -247,7 +248,7 @@ function loadLevel(level) {
     totalCoinsInLevel = lvl.coins.length;
     document.getElementById('coins').textContent = `0/${totalCoinsInLevel}`;
     marioChar.x = 50; marioChar.y = 300; marioChar.velY = 0; marioChar.jumping = false;
-    marioChar.invincible = 90;
+    marioChar.invincible = 20;
 }
 
 function loseLife() {
@@ -277,6 +278,7 @@ function openShop() {
     shopMessage = '';
     document.getElementById('pause').textContent = "⏸ PAUSE";
     document.getElementById('pause').style.borderColor = "#00FFCC";
+    document.getElementById('pause').style.color = "#00FFCC";
 }
 
 function closeShop() {
@@ -287,22 +289,6 @@ function closeShop() {
 function openMap() {
     if (!gameStarted || gameOver || gameWon) return;
     if (shopOpen) closeShop();
-    showMap = true;
-    isPaused = true;
-}
-
-function closeMap() {
-    showMap = false;
-    isPaused = false;
-}
-
-function closeShop() {
-    shopOpen = false;
-    isPaused = false;
-}
-
-function openMap() {
-    if (!gameStarted || gameOver || gameWon) return;
     showMap = true;
     isPaused = true;
 }
@@ -577,7 +563,7 @@ function update() {
                 enemy.frame += 0.2;
                 if (enemy.x <= 40 || enemy.x >= 740) enemy.dir *= -1;
                 enemy.shootTimer++;
-                if (enemy.shootTimer > 90) {
+                if (enemy.shootTimer > 70) {
                     enemy.shootTimer = 0;
                     const bob = Math.sin(enemy.frame * 3) * 3;
                     bullets.push({ x: enemy.dir === 1 ? enemy.x + enemy.w + 10 : enemy.x - 15, y: enemy.y + 16 + bob, speed: 5 * enemy.dir, w: 12, h: 6 });
@@ -597,7 +583,7 @@ function update() {
                     enemy.chargeCooldown--;
                     if (enemy.chargeCooldown <= 0) { enemy.charging = false; enemy.speed = enemy.baseSpeed; }
                 }
-                if (!enemy.charging && distToMario < 300 && enemy.chargeCooldown <= 0) {
+                if (!enemy.charging && distToMario < 500 && enemy.chargeCooldown <= 0) {
                     enemy.charging = true; enemy.speed = enemy.chargeSpeed; enemy.dir = marioChar.x > enemy.x ? 1 : -1;
                 }
                 if (enemy.charging) {
@@ -673,7 +659,6 @@ function drawBackground() {
     if (isNight) {
         ctx.fillStyle = '#FFE4B5'; ctx.beginPath(); ctx.arc(650, 70, 30, 0, Math.PI*2); ctx.fill();
         ctx.fillStyle = 'rgba(255,228,181,0.15)'; ctx.beginPath(); ctx.arc(650, 70, 50, 0, Math.PI*2); ctx.fill();
-        // Stars
         for(let i=0; i<60; i++) {
             const sx = (i*137 + cloudOffset*0.02)%800;
             const sy = (i*89 + 20)%250;
@@ -683,13 +668,12 @@ function drawBackground() {
         }
         ctx.globalAlpha = 1.0;
     } else {
-        // Sun
         ctx.fillStyle = '#FFE066'; ctx.beginPath(); ctx.arc(100, 70, 35, 0, Math.PI*2); ctx.fill();
         ctx.fillStyle = 'rgba(255,224,102,0.2)'; ctx.beginPath(); ctx.arc(100, 70, 55, 0, Math.PI*2); ctx.fill();
         ctx.fillStyle = 'rgba(255,224,102,0.1)'; ctx.beginPath(); ctx.arc(100, 70, 80, 0, Math.PI*2); ctx.fill();
     }
 
-    // Far mountains (parallax slow)
+    // Far mountains
     ctx.fillStyle = isNight ? '#1a1a2e' : '#6B8E6B';
     ctx.beginPath(); ctx.moveTo(0,400);
     for (let x = 0; x <= 800; x += 20) {
@@ -709,15 +693,13 @@ function drawBackground() {
 
     // Ground strip
     ctx.fillStyle = isNight ? '#1A4D1A' : '#2E8B2E';
-    ctx.beginPath();
-    ctx.moveTo(0,350);
+    ctx.beginPath(); ctx.moveTo(0,350);
     for (let x = 0; x <= 800; x += 15) {
         const h = Math.sin((x + cloudOffset*0.1)*0.02)*8;
         ctx.lineTo(x, 350 - h);
     }
     ctx.lineTo(800,400); ctx.lineTo(0,400); ctx.fill();
 
-    // Trees with more variety
     function drawTree(x, y, size) {
         ctx.fillStyle = isNight ? '#2A1C0B' : '#4A2C0B';
         ctx.fillRect(x-6,y-35,12,45);
@@ -737,7 +719,6 @@ function drawBackground() {
     drawPine(520,345,25); drawTree(640,350,20); drawPine(740,355,18);
     drawTree(60,355,15); drawPine(780,358,14);
 
-    // Clouds - more of them at different heights
     if (!isNight) {
         ctx.fillStyle = 'rgba(255,255,255,0.85)';
         const drawCloud = (cx, cy, w, h) => {
@@ -758,7 +739,6 @@ function drawBackground() {
         drawCloud(c1+700, 145, 55, 28);
     }
 
-    // Birds
     ctx.strokeStyle = isNight ? '#444' : '#333'; ctx.lineWidth = 2;
     for (let i = 0; i < 5; i++) {
         const by = 50 + i*30;
@@ -768,7 +748,7 @@ function drawBackground() {
 }
 
 function drawMario() {
-    if (marioChar.invincible > 0 && Math.floor(marioChar.invincible / 6) % 2 === 0) return;
+    if (marioChar.invincible > 0 && Math.floor(marioChar.invincible / 4) % 2 === 0) return;
     const c = CHARACTERS[currentChar];
     ctx.save();
     ctx.translate(marioChar.x + 20, marioChar.y + 25);
@@ -1045,7 +1025,7 @@ function draw() {
 
     for (let enemy of enemies) {
         if (!enemy.alive) continue;
-        if (enemy.spawnTimer > 0) ctx.globalAlpha = Math.max(0.2, 1 - enemy.spawnTimer / 120);
+        if (enemy.spawnTimer > 0) ctx.globalAlpha = Math.max(0.15, 1 - enemy.spawnTimer / 60);
         switch (enemy.type) {
             case 'shooter': drawShooterEnemy(enemy); break;
             case 'flyer': drawFlyerEnemy(enemy); break;
