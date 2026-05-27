@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Super Anes</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+    body { margin:0; padding:0; background:#111; font-family:Arial; text-align:center; color:white; touch-action:none; user-select:none; }
+    canvas { border:4px solid #000; image-rendering:pixelated; max-width:100%; height:auto; display:block; margin:0 auto; background: #5C94FC; }
+    h1 { text-shadow:3px 3px #000; margin:10px; }
+    .controls { margin:10px auto; display:flex; justify-content:center; gap:10px; max-width:600px; flex-wrap:wrap; }
+    button { padding:15px 20px; font-size:20px; background:rgba(0,0,0,0.6); color:white; border:3px solid white; border-radius:10px; cursor: pointer; }
+    button:active { background: rgba(255,255,255,0.3); }
+    .action-btn { font-size:24px; padding:15px 25px; font-weight: bold; }
+    .shoot-btn { border-color: #FF4500; color: #FFD700; }
+    .pause-btn { border-color: #00FFCC; color: #00FFCC; }
+    .shop-btn { border-color: #FFD700; color: #FFD700; }
+</style>
+</head>
+<body>
+    <h1>Super Anes</h1>
+    <p>Level <span id="level">1</span> | Score: <span id="score">0</span> | Coins: <span id="coins">0/0</span> | Lives: <span id="lives">❤️❤️❤️</span> | 💰<span id="globalCoins">0</span></p>
+    <canvas id="game" width="800" height="400"></canvas>
+    
+    <div class="controls">
+        <button id="left">←</button>
+        <button id="right">→</button>
+        <button id="shoot" class="action-btn shoot-btn">🔥 SHOOT</button>
+        <button id="jump" class="action-btn">↑ JUMP</button>
+        <button id="shop" class="action-btn shop-btn">🏪 SHOP</button>
+        <button id="mapBtn" class="action-btn" style="border-color:#00FF88;color:#00FF88;">🗺 MAP</button>
+        <button id="pause" class="action-btn pause-btn">⏸ PAUSE</button>
+    </div>
+    <div style="margin-top:6px; display:flex; justify-content:center; gap:10px; flex-wrap:wrap;">
+        <button onclick="restartGame()" style="font-size:14px; padding:8px 16px;">Restart Game</button>
+    </div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+let score = 0;
+let coinsCollected = 0;
+let totalCoinsInLevel = 0;
+let currentLevel = 1;
+let lives = 3;
+let gameOver = false;
+let gameWon = false;
+let gameStarted = false;
+let isPaused = false;
+let shopOpen = false;
+let shopTab = 'characters';
+let globalCoins = 0;
+let showMap = false;
+let unlockedLevel = 1;
+let completedLevels = {};
+
+// === CHARACTERS ===
+const CHARACTERS = {
+    mario:  { name:'Mario', color:'#E4000F', bodyColor:'#E4000F', hatColor:'#E4000F', speed:6, jump:-16, cost:0, desc:'Balanced hero' },
+    luigi:  { name:'Luigi', color:'#00AA00', bodyColor:'#00AA00', hatColor:'#00AA00', speed:5, jump:-19, cost:100, desc:'Higher jump, slower' },
+    toad:   { name:'Toad',  color:'#0044FF', bodyColor:'#0044FF', hatColor:'#0044FF', speed:8, jump:-12, cost:150, desc:'Very fast, low jump' },
+    wario:  { name:'Wario', color:'#8B008B', bodyColor:'#8B008B', hatColor:'#8B008B', speed:4.5, jump:-14, cost:200, desc:'Strong shots, slow' }
+};
+let ownedChars = { mario:true, luigi:false, toad:false, wario:false };
+let currentChar = 'mario';
+
+// === WEAPONS ===
+const WEAPONS = {
+    single:  { name:'Single Shot', desc:'One fireball', cost:0, cooldown:25, count:1, spread:0, size:12 },
+    spread:  { name:'Spread Shot', desc:'3 fireballs spread out', cost:100, cooldown:30, count:3, spread:0.3, size:10 },
+    rapid:   { name:'Rapid Fire', desc:'Fast shooting', cost:150, cooldown:8, count:1, spread:0, size:10 },
+    bigshot: { name:'Big Shot', desc:'Huge fireball', cost:200, cooldown:35, count:1, spread:0, size:22 },
+    shotgun: { name:'Shotgun', desc:'5 pellets wide spread', cost:250, cooldown:40, count:5, spread:0.6, size:8 }
+};
+let ownedWeapons = { single:true, spread:false, rapid:false, bigshot:false, shotgun:false };
+let currentWeapon = 'single';
+
+let selectedShopItem = null;
+let shopMessage = '';
+
+function saveCoins() {
+    try { localStorage.setItem('superAnesCoins', JSON.stringify({ globalCoins, unlockedLevel, completedLevels })); } catch(e) {}
+}
+
+function loadCoins() {
+    try {
+        const raw = localStorage.getItem('superAnesCoins');
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        if (data.globalCoins !== undefined) globalCoins = data.globalCoins;
+        if (data.unlockedLevel) unlockedLevel = data.unlockedLevel;
+        if (data.completedLevels) completedLevels = data.completedLevels;
+    } catch(e) {}
+}
+
+const marioChar = { x:50, y:300, width:40, height:50, velY:0, jumping:false, facing:1, frame:0 };
+
+const gravity = 0.8;
+let keys = {};
+let cloudOffset = 0;
+let birdOffset = 0;
+let lavaCycle = 0;
+
+let bullets = [];
+let fireballs = [];
+let particles = [];
+let shootCooldown = 0;
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, duration, type='sine', volume=0.5) {
+    if (isPaused && !shopOpen) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.value = volume; osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + duration);
+}
+function playJumpSound() { playSound(600,0.1,'triangle',0.6); setTimeout(()=>playSound(800,0.1,'triangle',0.5),50); }
+function playStompSound() { playSound(300,0.05,'square',0.7); setTimeout(()=>playSound(200,0.15,'square',0.6),50); }
+function playCoinSound() { playSound(800,0.05,'sine',0.6); setTimeout(()=>playSound(1200,0.1,'sine',0.5),30); }
+function playDieSound() { playSound(400,0.3,'sawtooth',0.6); setTimeout(()=>playSound(200,0.5,'sawtooth',0.5),150); }
+function playLaserSound() { playSound(500,0.08,'sawtooth',0.3); } 
+function playFireballSound() { playSound(300,0.1,'square',0.5); setTimeout(()=>playSound(150,0.1,'square',0.5), 50); }
+function playWinSound() { 
+    playSound(600,0.1,'sine',0.6); setTimeout(()=>playSound(800,0.1,'sine',0.6),100);
+    setTimeout(()=>playSound(1000,0.1,'sine',0.6),200); setTimeout(()=>playSound(1200,0.4,'sine',0.7),300);
+}
+function playBuySound() { playSound(900,0.1,'sine',0.5); setTimeout(()=>playSound(1200,0.15,'sine',0.5),80); }
+function playErrorSound() { playSound(200,0.2,'sawtooth',0.5); }
+
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        particles.push({ x:x, y:y, vx:(Math.random()-0.5)*10, vy:(Math.random()-0.5)*10, life:1.0, color:color });
+    }
+}
+
+function applyCharStats() {
+    const c = CHARACTERS[currentChar];
+    marioChar.speed = c.speed;
+}
+
+function getJumpPower() {
+    return CHARACTERS[currentChar].jump;
+}
+
+const ENEMY_TYPES = ['shooter', 'flyer', 'charger'];
+
+function pickEnemyTypes(level, maxCount) {
+    const types = [];
+    for (let i = 0; i < maxCount; i++) {
+        if (level >= 8 && Math.random() < 0.35) types.push('flyer');
+        else if (level >= 5 && Math.random() < 0.3) types.push('charger');
+        else types.push('shooter');
+    }
+    return types;
+}
+
+const levels = Array.from({length: 30}, (_, i) => {
+    const lvl = i + 1;
+    const baseSpeed = Math.min(1.5 + lvl * 0.45, 15);
+    const coinPositions = [
+        {x:150, y:220}, {x:280, y:160}, {x:450, y:110}, 
+        {x:620, y:190}, {x:720, y:200 - (lvl%3)*30}
+    ].concat(lvl > 8 ? [{x:380, y:130}, {x:550, y:170}, {x:200, y:180}, {x:480, y:140}] : []);
+    
+    const spikes = [];
+    if (lvl >= 3) {
+        spikes.push({x: 280 + (i%5)*30, y: 180 - (lvl>15?30:0), w: 20, h: 20});
+        if (lvl >= 10) spikes.push({x: 440 + (i%4)*35, y: 130 - (lvl>8?20:0), w: 20, h: 20});
+    }
+
+    const enemyCount = lvl === 1 ? 0 : Math.min(2 + Math.floor(lvl/6), 5);
+    const enemyTypes = pickEnemyTypes(lvl, enemyCount);
+    const enemyList = Array.from({length: enemyCount}, (_, e) => {
+        const type = enemyTypes[e] || 'shooter';
+        const base = {
+            x: 120 + e*140, y: 310, w:40, h:40,
+            speed: baseSpeed + e*0.3, dir: e%2 === 0 ? -1 : 1, alive: true, frame: Math.random()*10,
+            shootTimer: Math.random() * 100, type: type
+        };
+        if (type === 'flyer') { base.y = 150 + (e*30)%100; base.startY = base.y; base.flySpeed = 1 + Math.random()*1.5; }
+        if (type === 'charger') { base.charging = false; base.chargeCooldown = 0; base.baseSpeed = base.speed; base.chargeSpeed = base.speed*3; }
+        return base;
+    });
+
+    return {
+        platforms: [
+            {x:0, y:350, w:800, h:50},
+            {x:80 + (i%3)*40, y:260 - (lvl>10?20:0), w:120, h:20},
+            {x:250 + (i%5)*30, y:200 - (lvl>15?30:0), w:100, h:20},
+            {x:420 + (i%4)*35, y:150 - (lvl>8?20:0), w:90, h:20},
+            {x:580 + (i%3)*20, y:240 - (lvl>12?40:0), w:130, h:20}
+        ],
+        enemies: enemyList, coins: coinPositions, spikes: spikes
+    };
+});
+
+let platforms = [];
+let enemies = [];
+let coins = [];
+let spikes = [];
+
+function loadLevel(level) {
+    currentLevel = level;
+    const lvl = levels[level-1];
+    platforms = lvl.platforms;
+    enemies = lvl.enemies.map(e => ({...e}));
+    coins = lvl.coins.map(c => ({...c, collected: false, frame: Math.random()*Math.PI*2}));
+    spikes = lvl.spikes || [];
+    bullets = []; fireballs = []; particles = []; shootCooldown = 0;
+    coinsCollected = 0;
+    totalCoinsInLevel = lvl.coins.length;
+    document.getElementById('coins').textContent = `0/${totalCoinsInLevel}`;
+    marioChar.x = 50; marioChar.y = 300; marioChar.velY = 0; marioChar.jumping = false;
+}
+
+function loseLife() {
+    lives--;
+    document.getElementById('lives').textContent = '❤️'.repeat(Math.max(0, lives));
+    playDieSound();
+    bullets = []; fireballs = [];
+    spawnParticles(marioChar.x + 20, marioChar.y + 25, '#E4000F', 30);
+    if (lives <= 0) gameOver = true;
+    else { marioChar.x = 50; marioChar.y = 300; marioChar.velY = 0; }
+}
+
+function togglePause() {
+    if (!gameStarted || gameOver || gameWon || shopOpen) return;
+    isPaused = !isPaused;
+    const pauseBtn = document.getElementById('pause');
+    if (isPaused) { pauseBtn.textContent = "▶ RESUME"; pauseBtn.style.borderColor = "#FFD700"; pauseBtn.style.color = "#FFD700"; }
+    else { pauseBtn.textContent = "⏸ PAUSE"; pauseBtn.style.borderColor = "#00FFCC"; pauseBtn.style.color = "#00FFCC"; }
+}
+
+function openShop() {
+    if (!gameStarted || gameOver || gameWon) return;
+    shopOpen = true;
+    isPaused = true;
+    shopTab = 'characters';
+    shopMessage = '';
+    document.getElementById('pause').textContent = "⏸ PAUSE";
+    document.getElementById('pause').style.borderColor = "#00FFCC";
+    document.getElementById('pause').style.color = "#00FFCC";
+}
+
+function closeShop() {
+    shopOpen = false;
+    isPaused = false;
+}
+
+function openMap() {
+    if (!gameStarted || gameOver || gameWon) return;
+    showMap = true;
+    isPaused = true;
+}
+
+function closeMap() {
+    showMap = false;
+    isPaused = false;
+}
+
+function buyItem() {
+    if (!selectedShopItem) return;
+    if (shopTab === 'characters') {
+        const charId = selectedShopItem;
+        if (ownedChars[charId]) { shopMessage = 'Already owned!'; playErrorSound(); return; }
+        const cost = CHARACTERS[charId].cost;
+        if (globalCoins < cost) { shopMessage = `Need ${cost} coins!`; playErrorSound(); return; }
+        globalCoins -= cost;
+        ownedChars[charId] = true;
+        currentChar = charId;
+        applyCharStats();
+        shopMessage = `${CHARACTERS[charId].name} bought!`;
+        playBuySound();
+    } else {
+        const wpnId = selectedShopItem;
+        if (ownedWeapons[wpnId]) { shopMessage = 'Already owned!'; playErrorSound(); return; }
+        const cost = WEAPONS[wpnId].cost;
+        if (globalCoins < cost) { shopMessage = `Need ${cost} coins!`; playErrorSound(); return; }
+        globalCoins -= cost;
+        ownedWeapons[wpnId] = true;
+        currentWeapon = wpnId;
+        shopMessage = `${WEAPONS[wpnId].name} bought!`;
+        playBuySound();
+    }
+    document.getElementById('globalCoins').textContent = globalCoins;
+    saveCoins();
+}
+
+function selectShopItem(id) {
+    selectedShopItem = id;
+    shopMessage = '';
+}
+
+window.addEventListener('keydown', e => {
+    if (shopOpen) {
+        if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') { closeShop(); return; }
+        if (e.key === '1') { shopTab = 'characters'; selectedShopItem = null; shopMessage = ''; return; }
+        if (e.key === '2') { shopTab = 'weapons'; selectedShopItem = null; shopMessage = ''; return; }
+        if (e.key === 'Enter' && selectedShopItem) { buyItem(); return; }
+        return;
+    }
+    if (showMap) {
+        if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') { closeMap(); return; }
+        return;
+    }
+    if ((e.key === 'p' || e.key === 'P') && gameStarted) { togglePause(); return; }
+    if (isPaused) return;
+    keys[e.key] = true;
+    if (!gameStarted) { gameStarted = true; if (audioCtx.state === 'suspended') audioCtx.resume(); }
+});
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+const addTouch = (id, key) => {
+    const el = document.getElementById(id);
+    el.addEventListener('touchstart', e => { e.preventDefault(); if (isPaused && !shopOpen) return; keys[key] = true; });
+    el.addEventListener('touchend', e => { e.preventDefault(); keys[key] = false; });
+    el.addEventListener('mousedown', e => { e.preventDefault(); if (isPaused && !shopOpen) return; keys[key] = true; });
+    el.addEventListener('mouseup', e => { e.preventDefault(); keys[key] = false; });
+};
+addTouch('left', 'ArrowLeft');
+addTouch('right', 'ArrowRight');
+addTouch('shoot', 'f');
+
+document.getElementById('jump').addEventListener('touchstart', e => {
+    e.preventDefault();
+    if (shopOpen) return;
+    if (isPaused) return;
+    if (!marioChar.jumping) { marioChar.velY = getJumpPower(); marioChar.jumping = true; playJumpSound(); }
+});
+document.getElementById('pause').addEventListener('touchstart', e => { e.preventDefault(); togglePause(); });
+document.getElementById('pause').addEventListener('click', () => { togglePause(); });
+document.getElementById('shop').addEventListener('touchstart', e => { e.preventDefault(); openShop(); });
+document.getElementById('shop').addEventListener('click', () => { openShop(); });
+document.getElementById('mapBtn').addEventListener('touchstart', e => { e.preventDefault(); openMap(); });
+document.getElementById('mapBtn').addEventListener('click', () => { openMap(); });
+
+canvas.addEventListener('click', (e) => {
+    if (!gameStarted) { gameStarted = true; if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
+    if (showMap) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const mx = (e.clientX - rect.left) * scaleX;
+        const my = (e.clientY - rect.top) * scaleY;
+        // Close button
+        if (mx >= 700 && mx <= 770 && my >= 15 && my <= 45) { closeMap(); return; }
+        // Level nodes
+        const cols = 6, rows = 5;
+        const nodeR = 24;
+        const startX = 70, startY = 90;
+        const gapX = 120, gapY = 60;
+        for (let l = 1; l <= 30; l++) {
+            const col = (l - 1) % cols;
+            const row = Math.floor((l - 1) / cols);
+            const nx = startX + col * gapX;
+            const ny = startY + row * gapY;
+            const dx = mx - nx, dy = my - ny;
+            if (dx * dx + dy * dy <= nodeR * nodeR && l <= unlockedLevel) {
+                closeMap();
+                loadLevel(l);
+                document.getElementById('level').textContent = l;
+                return;
+            }
+        }
+        return;
+    }
+    if (!shopOpen) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top) * scaleY;
+    // Tab buttons
+    if (my >= 30 && my <= 65) {
+        if (mx >= 100 && mx <= 250) { shopTab = 'characters'; selectedShopItem = null; shopMessage = ''; return; }
+        if (mx >= 280 && mx <= 430) { shopTab = 'weapons'; selectedShopItem = null; shopMessage = ''; return; }
+    }
+    // Close button
+    if (mx >= 700 && mx <= 770 && my >= 15 && my <= 45) { closeShop(); return; }
+    // Buy button
+    if (mx >= 300 && mx <= 500 && my >= 320 && my <= 360 && selectedShopItem) { buyItem(); return; }
+    // Shop items
+    let items, startY = 80;
+    if (shopTab === 'characters') items = Object.keys(CHARACTERS);
+    else items = Object.keys(WEAPONS);
+    const boxW = 160, boxH = 80, gap = 15, cols = 4;
+    for (let i = 0; i < items.length; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const ix = 30 + col * (boxW + gap);
+        const iy = startY + row * (boxH + gap);
+        if (mx >= ix && mx <= ix + boxW && my >= iy && my <= iy + boxH) {
+            selectShopItem(items[i]);
+            return;
+        }
+    }
+});
+
+function fireWeapon() {
+    const wpn = WEAPONS[currentWeapon];
+    const isWario = currentChar === 'wario';
+    const dmgMult = isWario ? 1.5 : 1;
+    
+    if (wpn.count === 1) {
+        fireballs.push({
+            x: marioChar.facing === 1 ? marioChar.x + marioChar.width : marioChar.x - wpn.size,
+            y: marioChar.y + 15,
+            speed: 11 * marioChar.facing,
+            w: wpn.size, h: wpn.size,
+            damage: Math.round(wpn.damage * dmgMult)
+        });
+    } else {
+        for (let i = 0; i < wpn.count; i++) {
+            const spreadAngle = (i - (wpn.count-1)/2) * wpn.spread;
+            fireballs.push({
+                x: marioChar.facing === 1 ? marioChar.x + marioChar.width : marioChar.x - wpn.size,
+                y: marioChar.y + 15 + i * 8,
+                speed: (11 + spreadAngle * 3) * marioChar.facing,
+                w: wpn.size, h: wpn.size,
+                damage: Math.round(wpn.damage * dmgMult)
+            });
+        }
+    }
+    playFireballSound();
+}
+
+function update() {
+    if (!gameStarted || gameOver || gameWon || isPaused || shopOpen) return;
+
+    let moving = false;
+    if (keys['ArrowLeft'] || keys['a']) { marioChar.x -= marioChar.speed; marioChar.facing = -1; moving = true; }
+    if (keys['ArrowRight'] || keys['d']) { marioChar.x += marioChar.speed; marioChar.facing = 1; moving = true; }
+
+    if ((keys[' '] || keys['ArrowUp'] || keys['w']) && !marioChar.jumping) {
+        marioChar.velY = getJumpPower(); marioChar.jumping = true; playJumpSound();
+    }
+
+    if (shootCooldown > 0) shootCooldown--;
+    if ((keys['f'] || keys['F']) && shootCooldown === 0) {
+        fireWeapon();
+        shootCooldown = WEAPONS[currentWeapon].cooldown;
+    }
+
+    marioChar.velY += gravity;
+    marioChar.y += marioChar.velY;
+
+    for (let p of platforms) {
+        if (marioChar.x < p.x + p.w && marioChar.x + marioChar.width > p.x &&
+            marioChar.y < p.y + p.h && marioChar.y + marioChar.height > p.y) {
+            if (marioChar.velY > 0 && (marioChar.y + marioChar.height - marioChar.velY) <= p.y) {
+                marioChar.y = p.y - marioChar.height; marioChar.velY = 0; marioChar.jumping = false;
+            } else if (marioChar.velY < 0 && (marioChar.y - marioChar.velY) >= p.y + p.h) {
+                marioChar.y = p.y + p.h; marioChar.velY = 0;
+            }
+        }
+    }
+
+    if (moving && !marioChar.jumping) marioChar.frame += 0.25;
+
+    if (marioChar.x < 0) marioChar.x = 0;
+    if (marioChar.x + marioChar.width > canvas.width) {
+        if (currentLevel < 30) {
+            globalCoins += coinsCollected;
+            score += 500;
+            completedLevels[currentLevel] = true;
+            if (currentLevel + 1 > unlockedLevel) unlockedLevel = currentLevel + 1;
+            loadLevel(currentLevel + 1);
+            playWinSound();
+            saveCoins();
+        } else { gameWon = true; playWinSound(); }
+    }
+
+    lavaCycle += 0.04;
+    const lavaHeight = 20 + Math.sin(lavaCycle) * 15 + Math.min(currentLevel * 1.5, 40);
+    const lavaTopY = canvas.height - lavaHeight;
+
+    if (marioChar.y + marioChar.height > lavaTopY || marioChar.y > canvas.height) loseLife();
+
+    for (let spike of spikes) {
+        if (marioChar.x < spike.x + spike.w && marioChar.x + marioChar.width > spike.x &&
+            marioChar.y < spike.y + spike.h && marioChar.y + marioChar.height > spike.y) loseLife();
+    }
+
+    for (let i = fireballs.length - 1; i >= 0; i--) {
+        let fb = fireballs[i];
+        fb.x += fb.speed;
+        if (Math.random() > 0.5) spawnParticles(fb.x + fb.w/2, fb.y + fb.h/2, '#FFA500', 1);
+        let removed = false;
+        for (let ei = 0; ei < enemies.length; ei++) {
+            let enemy = enemies[ei];
+            if (!enemy.alive) continue;
+            if (fb.x < enemy.x + enemy.w && fb.x + fb.w > enemy.x &&
+                fb.y < enemy.y + enemy.h && fb.y + fb.h > enemy.y) {
+                enemy.alive = false;
+                playStompSound();
+                spawnParticles(enemy.x + 20, enemy.y + 20, '#8B4513', 20);
+                let pts = enemy.type === 'flyer' ? 300 : 200;
+                score += pts;
+                fireballs.splice(i, 1);
+                removed = true;
+                break;
+            }
+        }
+        if (removed) continue;
+        if (fb.x < 0 || fb.x > canvas.width) fireballs.splice(i, 1);
+    }
+
+    for (let enemy of enemies) {
+        if (!enemy.alive) continue;
+        switch (enemy.type) {
+            case 'shooter':
+                enemy.x += enemy.speed * enemy.dir;
+                enemy.frame += 0.2;
+                if (enemy.x <= 40 || enemy.x >= 740) enemy.dir *= -1;
+                enemy.shootTimer++;
+                if (enemy.shootTimer > 130) {
+                    enemy.shootTimer = 0;
+                    const bob = Math.sin(enemy.frame * 3) * 3;
+                    bullets.push({ x: enemy.dir === 1 ? enemy.x + enemy.w + 10 : enemy.x - 15, y: enemy.y + 16 + bob, speed: 5 * enemy.dir, w: 12, h: 6 });
+                    playLaserSound();
+                }
+                break;
+            case 'flyer':
+                enemy.frame += 0.1;
+                enemy.y = enemy.startY + Math.sin(enemy.frame * enemy.flySpeed) * 40;
+                enemy.x += enemy.speed * 0.4 * enemy.dir;
+                if (enemy.x <= 40 || enemy.x >= 740) enemy.dir *= -1;
+                break;
+            case 'charger':
+                enemy.frame += 0.1;
+                const distToMario = Math.abs(marioChar.x - enemy.x);
+                if (enemy.chargeCooldown > 0) {
+                    enemy.chargeCooldown--;
+                    if (enemy.chargeCooldown <= 0) { enemy.charging = false; enemy.speed = enemy.baseSpeed; }
+                }
+                if (!enemy.charging && distToMario < 250 && enemy.chargeCooldown <= 0) {
+                    enemy.charging = true; enemy.speed = enemy.chargeSpeed; enemy.dir = marioChar.x > enemy.x ? 1 : -1;
+                }
+                if (enemy.charging) {
+                    enemy.x += enemy.speed * enemy.dir;
+                    if (enemy.x <= 20 || enemy.x >= 760) { enemy.charging = false; enemy.speed = enemy.baseSpeed; enemy.chargeCooldown = 60; enemy.dir *= -1; }
+                } else {
+                    enemy.x += enemy.speed * 0.3 * enemy.dir;
+                    if (enemy.x <= 40 || enemy.x >= 740) enemy.dir *= -1;
+                }
+                break;
+        }
+        if (marioChar.x < enemy.x + enemy.w && marioChar.x + marioChar.width > enemy.x &&
+            marioChar.y < enemy.y + enemy.h && marioChar.y + marioChar.height > enemy.y) {
+            if (marioChar.velY > 0 && marioChar.y < enemy.y - 15) {
+                enemy.alive = false;
+                let pts = enemy.type === 'flyer' ? 300 : 200;
+                score += pts;
+                playStompSound();
+                spawnParticles(enemy.x + 20, enemy.y + 20, '#8B4513', 20);
+                marioChar.velY = -14;
+            } else loseLife();
+        }
+    }
+
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        let b = bullets[i];
+        b.x += b.speed;
+        if (b.x < marioChar.x + marioChar.width && b.x + b.w > marioChar.x &&
+            b.y < marioChar.y + marioChar.height && b.y + b.h > marioChar.y) {
+            bullets.splice(i, 1); loseLife(); continue;
+        }
+        if (b.x < 0 || b.x > canvas.width) bullets.splice(i, 1);
+    }
+
+    for (let coin of coins) {
+        if (coin.collected) continue;
+        if (marioChar.x < coin.x + 20 && marioChar.x + marioChar.width > coin.x &&
+            marioChar.y < coin.y + 20 && marioChar.y + marioChar.height > coin.y) {
+            coin.collected = true;
+            score += 100;
+            coinsCollected++;
+            globalCoins++;
+            document.getElementById('coins').textContent = `${coinsCollected}/${totalCoinsInLevel}`;
+            document.getElementById('globalCoins').textContent = globalCoins;
+            playCoinSound();
+            spawnParticles(coin.x + 10, coin.y + 10, '#FFD700', 15);
+            saveCoins();
+        }
+        coin.frame += 0.1;
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.life -= 0.03;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+
+    cloudOffset += 0.3;
+    birdOffset += 0.8;
+}
+
+function drawBackground() {
+    let topColor, bottomColor;
+    if (currentLevel <= 10) { topColor = '#5C94FC'; bottomColor = '#A0C4FF'; }
+    else if (currentLevel <= 20) { topColor = '#FF7E5F'; bottomColor = '#FEB47B'; }
+    else { topColor = '#0B0C10'; bottomColor = '#1F2833'; }
+    const grad = ctx.createLinearGradient(0,0,0,400);
+    grad.addColorStop(0, topColor); grad.addColorStop(1, bottomColor);
+    ctx.fillStyle = grad; ctx.fillRect(0,0,800,400);
+
+    if (currentLevel > 20) {
+        ctx.fillStyle = 'white';
+        for(let i=0; i<30; i++) {
+            const sx = (i*123 + cloudOffset*0.1)%800;
+            const sy = (i*87)%200;
+            ctx.globalAlpha = Math.abs(Math.sin(lavaCycle + i));
+            ctx.fillRect(sx, sy, 2, 2);
+        }
+        ctx.globalAlpha = 1.0;
+    }
+
+    ctx.fillStyle = currentLevel > 20 ? '#1A4D1A' : '#2E8B2E';
+    ctx.beginPath();
+    ctx.moveTo(0,350); ctx.quadraticCurveTo(200,220,400,350); ctx.quadraticCurveTo(600,180,800,350);
+    ctx.lineTo(800,400); ctx.lineTo(0,400); ctx.fill();
+
+    function drawTree(x, y, size) {
+        ctx.fillStyle = currentLevel > 20 ? '#2A1C0B' : '#4A2C0B'; ctx.fillRect(x-8,y-30,16,40);
+        ctx.fillStyle = currentLevel > 20 ? '#0E4A0E' : '#1E7A1E';
+        ctx.beginPath(); ctx.moveTo(x, y-50); ctx.lineTo(x-size, y-25); ctx.lineTo(x+size, y-25); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(x, y-35); ctx.lineTo(x-size*0.8, y-10); ctx.lineTo(x+size*0.8, y-10); ctx.fill();
+    }
+    drawTree(120,340,28); drawTree(280,355,22); drawTree(520,330,35); drawTree(680,345,25); drawTree(750,355,18);
+
+    ctx.fillStyle = currentLevel > 20 ? '#555' : 'white';
+    const cx = (cloudOffset%900)-100;
+    ctx.beginPath(); ctx.ellipse(cx+150,80,45,25,0,0,Math.PI*2); ctx.ellipse(cx+190,70,35,30,0,0,Math.PI*2); ctx.ellipse(cx+230,85,40,22,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx+550,120,50,28,0,0,Math.PI*2); ctx.ellipse(cx+590,105,38,32,0,0,Math.PI*2); ctx.ellipse(cx+640,125,45,25,0,0,Math.PI*2); ctx.fill();
+
+    ctx.strokeStyle = currentLevel > 20 ? '#111' : '#333'; ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+        const by = 60 + i*25;
+        const bx = (birdOffset + i*180)%1100 - 150;
+        ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(bx+12,by-6); ctx.lineTo(bx+24,by); ctx.stroke();
+    }
+}
+
+function drawMario() {
+    const c = CHARACTERS[currentChar];
+    ctx.save();
+    ctx.translate(marioChar.x + 20, marioChar.y + 25);
+    if (marioChar.facing === -1) ctx.scale(-1, 1);
+    ctx.fillStyle = c.bodyColor; ctx.fillRect(-18,-22,36,35);
+    ctx.fillStyle = '#FFCC88'; ctx.fillRect(-14,-32,28,18);
+    ctx.fillStyle = c.hatColor; ctx.fillRect(-16,-38,32,10);
+    ctx.fillStyle = '#000'; ctx.fillRect(4,-27,7,7);
+    const leg = Math.sin(marioChar.frame*10)*6;
+    ctx.fillStyle = '#000080';
+    ctx.fillRect(-12,8,10,18+leg);
+    ctx.fillRect(2,8,10,18-leg);
+    // Draw weapon on character
+    const wpn = WEAPONS[currentWeapon];
+    ctx.save();
+    ctx.translate(18, -8);
+    switch (currentWeapon) {
+        case 'single':
+            ctx.fillStyle = '#8B4513'; ctx.fillRect(0,0,18,5);
+            ctx.fillStyle = '#654321'; ctx.fillRect(14,0,4,5);
+            break;
+        case 'spread':
+            ctx.fillStyle = '#555'; ctx.fillRect(0,0,20,10);
+            ctx.fillStyle = '#444'; ctx.fillRect(16,0,6,3); ctx.fillRect(16,3,6,3); ctx.fillRect(16,6,6,3);
+            break;
+        case 'rapid':
+            ctx.fillStyle = '#333'; ctx.fillRect(0,1,22,5);
+            ctx.fillStyle = '#555'; ctx.fillRect(18,0,6,8);
+            ctx.fillStyle = '#222'; ctx.fillRect(10,-1,4,8);
+            break;
+        case 'bigshot':
+            ctx.fillStyle = '#666'; ctx.fillRect(0,0,28,10);
+            ctx.fillStyle = '#888'; ctx.fillRect(24,1,6,8);
+            ctx.fillStyle = '#FF4500'; ctx.fillRect(28,2,4,6);
+            break;
+        case 'shotgun':
+            ctx.fillStyle = '#8B4513'; ctx.fillRect(0,0,26,6);
+            ctx.fillStyle = '#654321'; ctx.fillRect(22,0,6,6);
+            ctx.fillStyle = '#A0522D'; ctx.fillRect(0,-2,18,10);
+            break;
+    }
+    ctx.restore();
+    ctx.restore();
+}
+
+function drawShooterEnemy(enemy) {
+    const bob = Math.sin(enemy.frame*3)*3;
+    ctx.fillStyle = '#8B4513'; ctx.fillRect(enemy.x, enemy.y+bob, enemy.w, enemy.h);
+    ctx.fillStyle = '#000'; ctx.fillRect(enemy.x+8, enemy.y+12+bob, 8, 8); ctx.fillRect(enemy.x+24, enemy.y+12+bob, 8, 8);
+    ctx.strokeStyle = 'red'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(enemy.x+4, enemy.y+10+bob); ctx.lineTo(enemy.x+16, enemy.y+14+bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(enemy.x+36, enemy.y+10+bob); ctx.lineTo(enemy.x+24, enemy.y+14+bob); ctx.stroke();
+    const legSwing = Math.sin(enemy.frame*6)*5;
+    ctx.fillStyle = '#654321'; ctx.fillRect(enemy.x+8, enemy.y+32+bob, 8, 12+legSwing); ctx.fillRect(enemy.x+24, enemy.y+32+bob, 8, 12-legSwing);
+    ctx.fillStyle = '#222';
+    if (enemy.dir === 1) { ctx.fillRect(enemy.x+enemy.w-5, enemy.y+14+bob, 15, 8); ctx.fillRect(enemy.x+enemy.w-5, enemy.y+20+bob, 4, 6); }
+    else { ctx.fillRect(enemy.x-10, enemy.y+14+bob, 15, 8); ctx.fillRect(enemy.x+1, enemy.y+20+bob, 4, 6); }
+}
+
+function drawFlyerEnemy(enemy) {
+    const bob = Math.sin(enemy.frame*6)*3;
+    ctx.fillStyle = '#4169E1';
+    const wingFlap = Math.sin(enemy.frame*4)*8;
+    ctx.beginPath(); ctx.moveTo(enemy.x, enemy.y+10); ctx.lineTo(enemy.x-25, enemy.y+5+wingFlap); ctx.lineTo(enemy.x, enemy.y+20); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(enemy.x+enemy.w, enemy.y+10); ctx.lineTo(enemy.x+enemy.w+25, enemy.y+5+wingFlap); ctx.lineTo(enemy.x+enemy.w, enemy.y+20); ctx.fill();
+    ctx.fillStyle = '#1E90FF';
+    ctx.beginPath(); ctx.ellipse(enemy.x+enemy.w/2, enemy.y+enemy.h/2+bob, enemy.w/2, enemy.h/2, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#FFF';
+    ctx.beginPath(); ctx.ellipse(enemy.x+12, enemy.y+15+bob, 6, 7, 0, 0, Math.PI*2); ctx.ellipse(enemy.x+28, enemy.y+15+bob, 6, 7, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(enemy.x+10, enemy.y+14+bob, 3, 5, 0, 0, Math.PI*2); ctx.ellipse(enemy.x+26, enemy.y+14+bob, 3, 5, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#FFA500';
+    ctx.beginPath(); ctx.moveTo(enemy.x+35, enemy.y+20+bob); ctx.lineTo(enemy.x+45, enemy.y+22+bob); ctx.lineTo(enemy.x+35, enemy.y+24+bob); ctx.fill();
+}
+
+function drawChargerEnemy(enemy) {
+    const bob = Math.sin(enemy.frame*4)*2;
+    ctx.fillStyle = '#8B0000'; ctx.fillRect(enemy.x-5, enemy.y+bob, enemy.w+10, enemy.h-5);
+    ctx.fillStyle = '#DC143C';
+    for (let i = 0; i < 3; i++) {
+        ctx.beginPath(); ctx.moveTo(enemy.x+5+i*14, enemy.y+bob); ctx.lineTo(enemy.x+12+i*14, enemy.y-12+bob); ctx.lineTo(enemy.x+19+i*14, enemy.y+bob); ctx.fill();
+    }
+    ctx.fillStyle = '#FFD700';
+    ctx.beginPath(); ctx.ellipse(enemy.x+12, enemy.y+14+bob, 7, 7, 0, 0, Math.PI*2); ctx.ellipse(enemy.x+28, enemy.y+14+bob, 7, 7, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(enemy.x+11, enemy.y+13+bob, 4, 5, 0, 0, Math.PI*2); ctx.ellipse(enemy.x+27, enemy.y+13+bob, 4, 5, 0, 0, Math.PI*2); ctx.fill();
+    if (enemy.charging) {
+        ctx.fillStyle = 'rgba(200,200,200,0.5)';
+        ctx.beginPath(); ctx.arc(enemy.dir===1?enemy.x+enemy.w+10:enemy.x-10, enemy.y+12+bob, 6+Math.random()*4, 0, Math.PI*2); ctx.fill();
+    }
+    const legSwing = Math.sin(enemy.frame*8)*4;
+    ctx.fillStyle = '#4A0000'; ctx.fillRect(enemy.x+4, enemy.y+30+bob, 10, 12+legSwing); ctx.fillRect(enemy.x+22, enemy.y+30+bob, 10, 12-legSwing);
+    if (enemy.charging) {
+        ctx.strokeStyle = `rgba(255,0,0,${0.3+Math.sin(enemy.frame*10)*0.2})`; ctx.lineWidth = 2;
+        ctx.strokeRect(enemy.x-8, enemy.y-4+bob, enemy.w+16, enemy.h+8);
+    }
+}
+
+function drawProjectiles() {
+    ctx.fillStyle = '#FF3333';
+    for (let b of bullets) {
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = 'rgba(255,255,0,0.4)'; ctx.fillRect(b.x-2, b.y-2, b.w+4, b.h+4); ctx.fillStyle = '#FF3333';
+    }
+    const wpn = WEAPONS[currentWeapon];
+    const isSpread = currentWeapon === 'spread';
+    for (let fb of fireballs) {
+        const color = currentChar === 'wario' ? '#8B008B' : (isSpread ? '#FF6347' : '#FF4500');
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(fb.x+fb.w/2, fb.y+fb.h/2, fb.w/2, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = isSpread ? 'rgba(255,200,0,0.5)' : 'rgba(255,215,0,0.6)';
+        ctx.beginPath(); ctx.arc(fb.x+fb.w/2, fb.y+fb.h/2, fb.w/2+3, 0, Math.PI*2); ctx.fill();
+    }
+}
+
+function drawParticles() {
+    for (let p of particles) { ctx.globalAlpha = Math.max(0,p.life); ctx.fillStyle = p.color; ctx.fillRect(p.x,p.y,6,6); }
+    ctx.globalAlpha = 1.0;
+}
+
+function drawLava() {
+    const lavaHeight = 20 + Math.sin(lavaCycle)*15 + Math.min(currentLevel*1.5, 40);
+    const topY = canvas.height - lavaHeight;
+    ctx.fillStyle = '#FF4500'; ctx.fillRect(0, topY, canvas.width, lavaHeight);
+    ctx.fillStyle = '#FF8C00';
+    ctx.beginPath();
+    for (let x = 0; x <= canvas.width; x += 20) {
+        const waveY = topY + Math.sin((x/30) + lavaCycle*2)*4;
+        if (x === 0) ctx.moveTo(x, waveY); else ctx.lineTo(x, waveY);
+    }
+    ctx.lineTo(canvas.width, canvas.height); ctx.lineTo(0, canvas.height); ctx.fill();
+}
+
+function drawSpikes() {
+    ctx.fillStyle = '#A9A9A9';
+    for (let spike of spikes) {
+        ctx.beginPath(); ctx.moveTo(spike.x, spike.y+spike.h); ctx.lineTo(spike.x+spike.w/2, spike.y); ctx.lineTo(spike.x+spike.w, spike.y+spike.h); ctx.fill();
+        ctx.fillStyle = '#E0E0E0';
+        ctx.beginPath(); ctx.moveTo(spike.x+spike.w/4, spike.y+spike.h); ctx.lineTo(spike.x+spike.w/2, spike.y+spike.h/2); ctx.lineTo(spike.x+spike.w/2, spike.y+spike.h); ctx.fill();
+        ctx.fillStyle = '#A9A9A9';
+    }
+}
+
+function drawShop() {
+    ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,800,400);
+    
+    // Title bar
+    ctx.fillStyle = '#FFD700'; ctx.font = 'bold 28px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('🏪 SHOP', 400, 30);
+    // Close X
+    ctx.fillStyle = '#FF4444'; ctx.font = 'bold 24px Arial';
+    ctx.fillText('✕', 735, 35);
+    
+    // Coins display
+    ctx.fillStyle = '#FFD700'; ctx.font = '18px Arial';
+    ctx.fillText(`💰 ${globalCoins} coins`, 400, 55);
+    
+    // Tabs
+    ctx.font = '18px Arial'; ctx.textAlign = 'center';
+    ctx.fillStyle = shopTab === 'characters' ? '#FFD700' : '#888';
+    ctx.fillRect(100, 30, 150, 35);
+    ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2;
+    ctx.strokeRect(100, 30, 150, 35);
+    ctx.fillStyle = shopTab === 'characters' ? '#000' : '#FFD700';
+    ctx.fillText('Characters', 175, 53);
+    
+    ctx.fillStyle = shopTab === 'weapons' ? '#FFD700' : '#888';
+    ctx.fillRect(280, 30, 150, 35);
+    ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2;
+    ctx.strokeRect(280, 30, 150, 35);
+    ctx.fillStyle = shopTab === 'weapons' ? '#000' : '#FFD700';
+    ctx.fillText('Weapons', 355, 53);
+    
+    // Items grid
+    let items, ownedMap;
+    if (shopTab === 'characters') { items = Object.entries(CHARACTERS); ownedMap = ownedChars; }
+    else { items = Object.entries(WEAPONS); ownedMap = ownedWeapons; }
+    
+    const boxW = 170, boxH = 80, gap = 15, cols = 4, startX = 20, startY = 80;
+    
+    for (let i = 0; i < items.length; i++) {
+        const [id, data] = items[i];
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const ix = startX + col * (boxW + gap);
+        const iy = startY + row * (boxH + gap);
+        
+        const isOwned = ownedMap[id];
+        const isSelected = selectedShopItem === id;
+        
+        // Box background
+        ctx.fillStyle = isSelected ? '#333' : '#222';
+        ctx.fillRect(ix, iy, boxW, boxH);
+        ctx.strokeStyle = isSelected ? '#FFD700' : (isOwned ? '#00FF00' : '#555');
+        ctx.lineWidth = isSelected ? 3 : 2;
+        ctx.strokeRect(ix, iy, boxW, boxH);
+        
+        // Name
+        ctx.fillStyle = 'white'; ctx.font = 'bold 16px Arial'; ctx.textAlign = 'center';
+        ctx.fillText(data.name, ix + boxW/2, iy + 22);
+        
+        if (shopTab === 'characters') {
+            // Draw small character icon
+            const c = data;
+            ctx.fillStyle = c.bodyColor;
+            ctx.fillRect(ix + boxW/2 - 8, iy + 30, 16, 14);
+            ctx.fillStyle = c.hatColor;
+            ctx.fillRect(ix + boxW/2 - 7, iy + 25, 14, 8);
+            // Cost or owned
+            ctx.fillStyle = isOwned ? '#00FF00' : '#FFD700';
+            ctx.font = '13px Arial';
+            ctx.fillText(isOwned ? (currentChar === id ? '✓ Equipped' : 'Owned') : `${c.cost} coins`, ix + boxW/2, iy + 70);
+            if (isOwned && currentChar === id) {
+                ctx.fillStyle = 'rgba(255,215,0,0.3)';
+                ctx.fillRect(ix, iy, boxW, boxH);
+            }
+        } else {
+            ctx.fillStyle = '#CCC'; ctx.font = '12px Arial';
+            ctx.fillText(data.desc, ix + boxW/2, iy + 45);
+            ctx.fillStyle = isOwned ? '#00FF00' : '#FFD700';
+            ctx.font = '13px Arial';
+            ctx.fillText(isOwned ? (currentWeapon === id ? '✓ Equipped' : 'Owned') : `${data.cost} coins`, ix + boxW/2, iy + 70);
+            if (isOwned && currentWeapon === id) {
+                ctx.fillStyle = 'rgba(255,215,0,0.3)';
+                ctx.fillRect(ix, iy, boxW, boxH);
+            }
+        }
+    }
+    
+    // Buy button
+    if (selectedShopItem) {
+        const isOwned = shopTab === 'characters' ? ownedChars[selectedShopItem] : ownedWeapons[selectedShopItem];
+        const cost = shopTab === 'characters' ? CHARACTERS[selectedShopItem].cost : WEAPONS[selectedShopItem].cost;
+        const canBuy = !isOwned && globalCoins >= cost;
+        
+        ctx.fillStyle = canBuy ? '#FFD700' : '#555';
+        ctx.fillRect(300, 320, 200, 40);
+        ctx.strokeStyle = canBuy ? '#FFF' : '#888'; ctx.lineWidth = 2;
+        ctx.strokeRect(300, 320, 200, 40);
+        ctx.fillStyle = canBuy ? '#000' : '#999';
+        ctx.font = 'bold 20px Arial'; ctx.textAlign = 'center';
+        ctx.fillText(isOwned ? 'OWNED' : `BUY (${cost})`, 400, 347);
+    }
+    
+    // Message
+    if (shopMessage) {
+        ctx.fillStyle = '#FFD700'; ctx.font = '16px Arial'; ctx.textAlign = 'center';
+        ctx.fillText(shopMessage, 400, 380);
+    }
+    
+    // Instructions
+    ctx.fillStyle = '#888'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('Click an item to select, then Buy | Press Esc to close | 1=Characters 2=Weapons', 400, 395);
+}
+
+function draw() {
+    if (shopOpen) { drawShop(); return; }
+    if (showMap) { drawMap(); return; }
+    
+    if (!gameStarted) {
+        ctx.fillStyle = '#5C94FC'; ctx.fillRect(0,0,800,400);
+        ctx.fillStyle = 'white'; ctx.font = 'bold 58px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('SUPER ANES MARIO', 400, 110);
+        ctx.font = '24px Arial'; ctx.fillStyle = '#FF0'; ctx.fillText('by Anes', 400, 145);
+        ctx.font = '20px Arial'; ctx.fillStyle = '#CCC';
+        ctx.fillText(`Character: ${CHARACTERS[currentChar].name}  |  Weapon: ${WEAPONS[currentWeapon].name}`, 400, 185);
+        ctx.font = 'bold 26px Arial'; ctx.fillStyle = 'white';
+        ctx.fillText('TAP OR PRESS ANY KEY', 400, 260);
+        ctx.fillText('TO START', 400, 295);
+        ctx.font = '18px Arial'; ctx.fillStyle = '#FFD700';
+        ctx.fillText('Press SHOP button or click to buy characters & weapons!', 400, 335);
+        return;
+    }
+
+    drawBackground();
+    
+    ctx.fillStyle = currentLevel > 20 ? '#222' : '#0B5E0B';
+    for (let p of platforms) {
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        ctx.fillStyle = currentLevel > 20 ? '#444' : '#15B015';
+        ctx.fillRect(p.x, p.y, p.w, 5);
+        ctx.fillStyle = currentLevel > 20 ? '#222' : '#0B5E0B';
+    }
+
+    drawSpikes();
+    drawMario();
+
+    for (let enemy of enemies) {
+        if (!enemy.alive) continue;
+        switch (enemy.type) {
+            case 'shooter': drawShooterEnemy(enemy); break;
+            case 'flyer': drawFlyerEnemy(enemy); break;
+            case 'charger': drawChargerEnemy(enemy); break;
+        }
+    }
+
+    drawProjectiles();
+    drawParticles();
+
+    for (let coin of coins) {
+        if (coin.collected) continue;
+        const bob = Math.sin(coin.frame) * 4;
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath(); ctx.arc(coin.x+10, coin.y+10+bob, 10, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#FFA500'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+        ctx.fillText('C', coin.x+10, coin.y+14+bob);
+    }
+
+    drawLava();
+
+    document.getElementById('level').textContent = currentLevel;
+    document.getElementById('score').textContent = Math.floor(score);
+
+    ctx.textAlign = 'center';
+    if (gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,800,400);
+        ctx.fillStyle = 'red'; ctx.font = 'bold 50px Arial'; ctx.fillText('GAME OVER', 400, 180);
+        ctx.font = '20px Arial'; ctx.fillStyle = 'white'; ctx.fillText(`Final Score: ${Math.floor(score)} | Coins: ${globalCoins}`, 400, 230);
+    }
+    if (gameWon) {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,800,400);
+        ctx.fillStyle = 'gold'; ctx.font = 'bold 50px Arial'; ctx.fillText('YOU WIN!', 400, 180);
+        ctx.font = '20px Arial'; ctx.fillStyle = 'white'; ctx.fillText(`Final Score: ${Math.floor(score)} | Coins: ${globalCoins}`, 400, 230);
+    }
+    
+    if (isPaused) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,800,400);
+        ctx.fillStyle = '#00FFCC'; ctx.font = 'bold 48px Arial'; ctx.fillText('GAME PAUSED', 400, 200);
+        ctx.font = '20px Arial'; ctx.fillStyle = 'white'; ctx.fillText('Press P or tap Resume to continue', 400, 240);
+    }
+}
+
+function drawMap() {
+    ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, 800, 400);
+    // Title
+    ctx.fillStyle = '#00FF88'; ctx.font = 'bold 28px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('🗺 LEVEL MAP', 400, 40);
+    // Close button
+    ctx.fillStyle = '#FF4444'; ctx.font = 'bold 24px Arial'; ctx.textAlign = 'center';
+    ctx.fillRect(700, 15, 70, 30); ctx.fillStyle = 'white'; ctx.font = 'bold 18px Arial';
+    ctx.fillText('✕ CLOSE', 735, 36);
+    // Connecting lines
+    const cols = 6, rows = 5, nodeR = 24;
+    const startX = 70, startY = 90, gapX = 120, gapY = 60;
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 2;
+    for (let l = 1; l < 30; l++) {
+        const col1 = (l - 1) % cols, row1 = Math.floor((l - 1) / cols);
+        const col2 = l % cols, row2 = Math.floor(l / cols);
+        const x1 = startX + col1 * gapX, y1 = startY + row1 * gapY;
+        const x2 = startX + col2 * gapX, y2 = startY + row2 * gapY;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+    // Level nodes
+    for (let l = 1; l <= 30; l++) {
+        const col = (l - 1) % cols, row = Math.floor((l - 1) / cols);
+        const nx = startX + col * gapX, ny = startY + row * gapY;
+        const unlocked = l <= unlockedLevel;
+        const completed = completedLevels[l];
+        ctx.beginPath(); ctx.arc(nx, ny, nodeR, 0, Math.PI * 2);
+        if (completed) { ctx.fillStyle = '#FFD700'; ctx.strokeStyle = '#FFA500'; }
+        else if (unlocked) { ctx.fillStyle = '#00FF88'; ctx.strokeStyle = '#00CC66'; }
+        else { ctx.fillStyle = '#444'; ctx.strokeStyle = '#333'; }
+        ctx.fill(); ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = unlocked ? (l === currentLevel ? '#FF0' : 'white') : '#666';
+        ctx.font = 'bold 14px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(l, nx, ny);
+    }
+    // Legend
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '13px Arial';
+    ctx.fillStyle = '#FFD700'; ctx.fillText('★ = Completed', 120, 375);
+    ctx.fillStyle = '#00FF88'; ctx.fillText('● = Unlocked', 300, 375);
+    ctx.fillStyle = '#666'; ctx.fillText('● = Locked', 460, 375);
+    document.getElementById('level').textContent = currentLevel;
+}
+
+function gameLoop() { update(); draw(); requestAnimationFrame(gameLoop); }
+
+function restartGame() { location.reload(); }
+
+loadCoins();
+loadLevel(1);
+applyCharStats();
+document.getElementById('lives').textContent = '❤️❤️❤️';
+document.getElementById('globalCoins').textContent = globalCoins;
+gameLoop();
+</script>
+</body>
+</html>
